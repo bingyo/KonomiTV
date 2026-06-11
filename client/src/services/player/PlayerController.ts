@@ -89,6 +89,10 @@ class PlayerController {
     // L字画面のクロップ設定で使うウォッチャーを保持する配列
     private lshaped_screen_crop_watchers: (() => void)[] = [];
 
+    // 字幕の表示スタイル (文字サイズ・縦位置) を CSS カスタムプロパティへ反映するウォッチャーを保持する配列
+    // destroy() 時に解放することで、チャンネル切替などで PlayerController が作り直されてもリスナーが累積しないようにする
+    private caption_style_watchers: (() => void)[] = [];
+
     // 破棄中かどうか
     // 破棄中は destroy() が呼ばれても何もしない
     private destroying = false;
@@ -726,56 +730,25 @@ class PlayerController {
             }
         });
 
-	// 字幕の拡大倍率（お好みで調整）
-	const CAPTION_SCALE = 0.5;
-	const CAPTION_OFFSET_Y = -160;  // 単位はpx。マイナスで上に移動、プラスで下
-
-	// DOM から対象を拾って拡大を適用
-	const applyCaptionEnlarge = () => {
-	const root = (this.player as any).template.container as HTMLElement;
-
-	// 1) ARIBB24 の Canvas（クラスが無いのでセレクタで位置指定）
-	const canvases = root.querySelectorAll<HTMLCanvasElement>('.dplayer-video-wrap-aspect > canvas');
-  	canvases.forEach((cv) => {
-    	
-	// 既に適用済みでも上書きできるように毎回セット
-    	cv.style.transform = `scale(${CAPTION_SCALE}) translateY(${CAPTION_OFFSET_Y}px)`;
-	cv.style.transformOrigin = 'bottom center';
-    	cv.style.willChange = 'transform';
-    	cv.style.pointerEvents = 'none';
-  	});
-
-	// 2) DPlayer の通常字幕（WebVTT 等）
-	const sub = root.querySelector<HTMLDivElement>('.dplayer-subtitle');
-	if (sub) {
-		const base = parseFloat(getComputedStyle(sub).fontSize || '20'); // 既定 20px 相当
-		sub.style.fontSize = `${Math.round(base * CAPTION_SCALE)}px`;
-		sub.style.lineHeight = '1.2';
-		sub.style.transform = `translateY(${CAPTION_OFFSET_Y}px)`;
-	}
-	};
-
-	// Canvas が差し込まれるまで待って一度適用
-	{
-		const root = (this.player as any).template.container as HTMLElement;
-		const mo = new MutationObserver(() => {
-			if (root.querySelector('.dplayer-video-wrap-aspect > canvas')) {
-				applyCaptionEnlarge();
-				mo.disconnect();
-			}
-	       	});
-		mo.observe(root, { childList: true, subtree: true });
-	}
-
-	// 画面サイズ変更/フルスクリーン切り替えなどで再適用
-	window.addEventListener('resize', applyCaptionEnlarge);
-	document.addEventListener('fullscreenchange', applyCaptionEnlarge);
-
-	// プレイヤー内部イベントで Canvas が再生成されるケースにも保険
-	(this.player as any).on('loadeddata', applyCaptionEnlarge);
-	(this.player as any).on('quality', applyCaptionEnlarge);
-	(this.player as any).on('fullscreen', applyCaptionEnlarge);
-	(this.player as any).on('webfullscreen', applyCaptionEnlarge);
+        // 字幕の文字サイズ倍率・縦位置の設定値を、プレイヤーコンテナの CSS カスタムプロパティに反映する
+        // ARIB B24 字幕の Canvas に対するスタイルは App.vue 側のグローバル CSS (.dplayer-video-wrap-aspect > canvas)
+        // で定義しており、ここでセットした CSS 変数を介して Canvas に transform が適用される
+        // CSS のみで完結させることで、Canvas が動的に追加されたタイミングでも自動的にスタイルが反映され、
+        // 起動時に MutationObserver や同期 DOM 操作を走らせる必要がなくなる (結果として再生開始までの遅延を解消できる)
+        const applyCaptionStyle = () => {
+            if (this.player === null) return;
+            const container = this.player.container;
+            const scale = settings_store.settings.caption_text_scale;
+            const offset = settings_store.settings.caption_vertical_position_offset;
+            container.style.setProperty('--caption-text-scale', String(scale));
+            container.style.setProperty('--caption-vertical-offset-percent', `${offset}%`);
+        };
+        // 設定値が変更されたときに即座にプレイヤー側へ反映する
+        // immediate: true により、watch 登録時点でも初期値が適用される
+        this.caption_style_watchers = [
+            watch(() => settings_store.settings.caption_text_scale, applyCaptionStyle, { immediate: true }),
+            watch(() => settings_store.settings.caption_vertical_position_offset, applyCaptionStyle, { immediate: true }),
+        ];
 
         // デバッグ用にプレイヤーインスタンスも window 直下に入れる
         (window as any).player = this.player;
@@ -2147,6 +2120,13 @@ class PlayerController {
             this.lshaped_screen_crop_watchers = [];
         }
 
+        // 字幕スタイル (文字サイズ・縦位置) のウォッチャーを破棄
+        // チャンネル切替などで PlayerController を再初期化したときにウォッチャーが累積しないようにする
+        if (this.caption_style_watchers.length > 0) {
+            this.caption_style_watchers.forEach((unwatcher) => unwatcher());
+            this.caption_style_watchers = [];
+        }
+
         // DPlayer 本体を破棄
         // なぜか例外が出ることがあるので try-catch で囲む
         if (this.player !== null) {
@@ -2192,4 +2172,3 @@ class PlayerController {
 }
 
 export default PlayerController;
-

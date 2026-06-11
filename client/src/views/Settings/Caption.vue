@@ -51,6 +51,28 @@
                     </v-slider>
                 </div>
             </div>
+            <div class="settings__item">
+                <label class="settings__item-heading">字幕の文字サイズ</label>
+                <label class="settings__item-label">
+                    字幕の文字サイズを倍率で調整します。1.0 が標準サイズです。小さくしたい場合は 1.0 より小さい値、大きくしたい場合は 1.0 より大きい値を設定してください。<br>
+                </label>
+                <div class="settings__item-label">
+                    <v-slider class="settings__item-form" color="primary" show-ticks="always" thumb-label hide-details
+                        :min="0.3" :max="1.8" :step="0.05" v-model="settingsStore.settings.caption_text_scale">
+                    </v-slider>
+                </div>
+            </div>
+            <div class="settings__item">
+                <label class="settings__item-heading">字幕の縦位置</label>
+                <label class="settings__item-label">
+                    字幕の縦位置を映像の高さに対する割合 (%) で調整します。0 が元の位置、マイナス値で上方向に、プラス値で下方向に移動します。<br>
+                </label>
+                <div class="settings__item-label">
+                    <v-slider class="settings__item-form" color="primary" show-ticks="always" thumb-label hide-details
+                        :min="-50" :max="20" :step="1" v-model="settingsStore.settings.caption_vertical_position_offset">
+                    </v-slider>
+                </div>
+            </div>
             <v-divider class="mt-6"></v-divider>
             <div class="settings__item settings__item--switch">
                 <label class="settings__item-heading" for="tv_show_superimpose">テレビをみるときに文字スーパーを表示する</label>
