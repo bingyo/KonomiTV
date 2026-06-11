@@ -22,7 +22,6 @@ import usePlayerStore from '@/stores/PlayerStore';
 import useSettingsStore, { LiveStreamingQuality, LIVE_STREAMING_QUALITIES, VideoStreamingQuality, VIDEO_STREAMING_QUALITIES } from '@/stores/SettingsStore';
 import Utils, { dayjs, PlayerUtils } from '@/utils';
 
-
 /**
  * 動画プレイヤーである DPlayer に関連するロジックを丸ごとラップするクラスで、再生系ロジックの中核を担う
  * DPlayer の初期化後は DPlayer が発行するイベントなどに合わせ、各イベントハンドラーや PlayerManager を管理する
@@ -726,6 +725,57 @@ class PlayerController {
                 }
             }
         });
+
+	// 字幕の拡大倍率（お好みで調整）
+	const CAPTION_SCALE = 0.5;
+	const CAPTION_OFFSET_Y = -160;  // 単位はpx。マイナスで上に移動、プラスで下
+
+	// DOM から対象を拾って拡大を適用
+	const applyCaptionEnlarge = () => {
+	const root = (this.player as any).template.container as HTMLElement;
+
+	// 1) ARIBB24 の Canvas（クラスが無いのでセレクタで位置指定）
+	const canvases = root.querySelectorAll<HTMLCanvasElement>('.dplayer-video-wrap-aspect > canvas');
+  	canvases.forEach((cv) => {
+    	
+	// 既に適用済みでも上書きできるように毎回セット
+    	cv.style.transform = `scale(${CAPTION_SCALE}) translateY(${CAPTION_OFFSET_Y}px)`;
+	cv.style.transformOrigin = 'bottom center';
+    	cv.style.willChange = 'transform';
+    	cv.style.pointerEvents = 'none';
+  	});
+
+	// 2) DPlayer の通常字幕（WebVTT 等）
+	const sub = root.querySelector<HTMLDivElement>('.dplayer-subtitle');
+	if (sub) {
+		const base = parseFloat(getComputedStyle(sub).fontSize || '20'); // 既定 20px 相当
+		sub.style.fontSize = `${Math.round(base * CAPTION_SCALE)}px`;
+		sub.style.lineHeight = '1.2';
+		sub.style.transform = `translateY(${CAPTION_OFFSET_Y}px)`;
+	}
+	};
+
+	// Canvas が差し込まれるまで待って一度適用
+	{
+		const root = (this.player as any).template.container as HTMLElement;
+		const mo = new MutationObserver(() => {
+			if (root.querySelector('.dplayer-video-wrap-aspect > canvas')) {
+				applyCaptionEnlarge();
+				mo.disconnect();
+			}
+	       	});
+		mo.observe(root, { childList: true, subtree: true });
+	}
+
+	// 画面サイズ変更/フルスクリーン切り替えなどで再適用
+	window.addEventListener('resize', applyCaptionEnlarge);
+	document.addEventListener('fullscreenchange', applyCaptionEnlarge);
+
+	// プレイヤー内部イベントで Canvas が再生成されるケースにも保険
+	(this.player as any).on('loadeddata', applyCaptionEnlarge);
+	(this.player as any).on('quality', applyCaptionEnlarge);
+	(this.player as any).on('fullscreen', applyCaptionEnlarge);
+	(this.player as any).on('webfullscreen', applyCaptionEnlarge);
 
         // デバッグ用にプレイヤーインスタンスも window 直下に入れる
         (window as any).player = this.player;
@@ -2142,3 +2192,4 @@ class PlayerController {
 }
 
 export default PlayerController;
+
