@@ -103,6 +103,8 @@ class ClientSettings(BaseModel):
     always_border_caption_text: bool = True
     specify_caption_opacity: bool = False
     caption_opacity: Annotated[float, confloat(ge=0.0, le=1.0)] = 1.0
+    caption_text_scale: Annotated[float, confloat(ge=0.3, le=1.8)] = 1.0
+    caption_vertical_position_offset: Annotated[float, confloat(ge=-50.0, le=20.0)] = 0.0
     tv_show_superimpose: bool = True
     video_show_superimpose: bool = False
     # tv_show_data_broadcasting: 同期無効

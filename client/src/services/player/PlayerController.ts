@@ -90,6 +90,10 @@ class PlayerController {
     // L字画面のクロップ設定で使うウォッチャーを保持する配列
     private lshaped_screen_crop_watchers: (() => void)[] = [];
 
+    // 字幕の表示スタイル (文字サイズ・縦位置) を CSS カスタムプロパティへ反映するウォッチャーを保持する配列
+    // destroy() 時に解放することで、チャンネル切替などで PlayerController が作り直されてもリスナーが累積しないようにする
+    private caption_style_watchers: (() => void)[] = [];
+
     // 破棄中かどうか
     // 破棄中は destroy() が呼ばれても何もしない
     private destroying = false;
@@ -726,6 +730,26 @@ class PlayerController {
                 }
             }
         });
+
+        // 字幕の文字サイズ倍率・縦位置の設定値を、プレイヤーコンテナの CSS カスタムプロパティに反映する
+        // ARIB B24 字幕の Canvas に対するスタイルは App.vue 側のグローバル CSS (.dplayer-video-wrap-aspect > canvas)
+        // で定義しており、ここでセットした CSS 変数を介して Canvas に transform が適用される
+        // CSS のみで完結させることで、Canvas が動的に追加されたタイミングでも自動的にスタイルが反映され、
+        // 起動時に MutationObserver や同期 DOM 操作を走らせる必要がなく、再生開始の遅延要因にもならない
+        const apply_caption_style = () => {
+            if (this.player === null) return;
+            const container = this.player.container;
+            const scale = settings_store.settings.caption_text_scale;
+            const offset = settings_store.settings.caption_vertical_position_offset;
+            container.style.setProperty('--caption-text-scale', String(scale));
+            container.style.setProperty('--caption-vertical-offset-percent', `${offset}%`);
+        };
+        // 設定値が変更されたときに即座にプレイヤー側へ反映する
+        // immediate: true により、watch 登録時点でも初期値が適用される
+        this.caption_style_watchers = [
+            watch(() => settings_store.settings.caption_text_scale, apply_caption_style, { immediate: true }),
+            watch(() => settings_store.settings.caption_vertical_position_offset, apply_caption_style, { immediate: true }),
+        ];
 
         // デバッグ用にプレイヤーインスタンスも window 直下に入れる
         (window as any).player = this.player;
@@ -2095,6 +2119,13 @@ class PlayerController {
         if (this.lshaped_screen_crop_watchers.length > 0) {
             this.lshaped_screen_crop_watchers.forEach((unwatcher) => unwatcher());
             this.lshaped_screen_crop_watchers = [];
+        }
+
+        // 字幕スタイル (文字サイズ・縦位置) のウォッチャーを破棄
+        // チャンネル切替などで PlayerController を再初期化したときにウォッチャーが累積しないようにする
+        if (this.caption_style_watchers.length > 0) {
+            this.caption_style_watchers.forEach((unwatcher) => unwatcher());
+            this.caption_style_watchers = [];
         }
 
         // DPlayer 本体を破棄
