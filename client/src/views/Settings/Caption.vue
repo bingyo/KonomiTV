@@ -58,18 +58,18 @@
                 </label>
                 <div class="settings__item-label">
                     <v-slider class="settings__item-form" color="primary" show-ticks="always" thumb-label hide-details
-                        :min="0.3" :max="1.8" :step="0.05" v-model="settingsStore.settings.caption_text_scale">
+                        :min="0.3" :max="1.5" :step="0.1" v-model="settingsStore.settings.caption_text_scale">
                     </v-slider>
                 </div>
             </div>
             <div class="settings__item">
                 <label class="settings__item-heading">字幕の縦位置</label>
                 <label class="settings__item-label">
-                    字幕の縦位置を映像の高さに対する割合 (%) で調整します。0 が元の位置、マイナス値で上方向に、プラス値で下方向に移動します。<br>
+                    字幕の縦位置を調整します。0 が画面下端、100 が画面上端で、値を大きくするほど上方向に移動します。初期値の 30 が字幕の通常表示位置です。<br>
                 </label>
                 <div class="settings__item-label">
                     <v-slider class="settings__item-form" color="primary" show-ticks="always" thumb-label hide-details
-                        :min="-50" :max="20" :step="1" v-model="settingsStore.settings.caption_vertical_position_offset">
+                        :min="0" :max="100" :step="10" v-model="settingsStore.settings.caption_vertical_position_offset">
                     </v-slider>
                 </div>
             </div>

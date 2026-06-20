@@ -284,8 +284,8 @@ export const ILocalClientSettingsDefault: ILocalClientSettings = {
     caption_opacity: 0.5,
     // 字幕の文字サイズ倍率 (Default: 1.0 = 標準サイズ)
     caption_text_scale: 1.0,
-    // 字幕の縦位置オフセット (Default: 0 = 元の位置、映像高に対する % で指定、マイナスで上に移動)
-    caption_vertical_position_offset: 0,
+    // 字幕の縦位置 (Default: 30 = 字幕の通常表示位置、0 が画面下端・100 が画面上端)
+    caption_vertical_position_offset: 30,
     // テレビをみるときに文字スーパーを表示する (Default: 表示する)
     tv_show_superimpose: true,
     // ビデオをみるときに文字スーパーを表示する (Default: 表示しない)

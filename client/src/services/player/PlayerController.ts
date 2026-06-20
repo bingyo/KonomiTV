@@ -742,7 +742,9 @@ class PlayerController {
             const scale = settings_store.settings.caption_text_scale;
             const offset = settings_store.settings.caption_vertical_position_offset;
             container.style.setProperty('--caption-text-scale', String(scale));
-            container.style.setProperty('--caption-vertical-offset-percent', `${offset}%`);
+            // 座標系変換: 0=画面下端, 100=画面上端, 30=字幕の自然位置 (ARIB B24 の描画位置がキャンバス上端から約70%)
+            // CSS の translateY は負が上方向なので、(30 - offset)% で正しく対応する
+            container.style.setProperty('--caption-vertical-offset-percent', `${30 - offset}%`);
         };
         // 設定値が変更されたときに即座にプレイヤー側へ反映する
         // immediate: true により、watch 登録時点でも初期値が適用される
