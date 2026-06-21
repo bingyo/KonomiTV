@@ -9,6 +9,24 @@
             <span class="ml-3">字幕</span>
         </h2>
         <div class="settings__content">
+            <!-- 字幕設定のライブプレビュー -->
+            <!-- 下の各設定 (フォント・縁取り・不透明度・文字サイズ・縦位置) の値をリアルタイムに反映し、
+                 設定画面から離れることなく、実際の見え方を確認できるようにする -->
+            <div class="settings__item caption-preview">
+                <label class="settings__item-heading">プレビュー</label>
+                <label class="settings__item-label">
+                    下の各設定を変更すると、字幕の見え方がここにリアルタイムで反映されます。<br>
+                </label>
+                <!-- 映像を模した 16:9 のダーク背景。字幕レイヤーの transform 基準となるよう relative にする -->
+                <div class="caption-preview__screen">
+                    <!-- 字幕レイヤー: 実描画 (App.vue の `.dplayer-video-wrap-aspect > canvas`) と同じく
+                         フルサイズに敷き、transform-origin: bottom center で transform を適用する -->
+                    <div class="caption-preview__layer" :style="captionLayerStyle">
+                        <!-- 字幕テキスト: ARIB の自然表示位置 (画面下端から約 30%) に配置する -->
+                        <span class="caption-preview__text" :style="captionTextStyle">こんばんは。今日のニュースをお伝えします。</span>
+                    </div>
+                </div>
+            </div>
             <div class="settings__item">
                 <label class="settings__item-heading">字幕のフォント</label>
                 <label class="settings__item-label">
@@ -154,7 +172,108 @@ export default defineComponent({
     },
     computed: {
         ...mapStores(useSettingsStore),
+
+        // プレビューの字幕レイヤーに適用する transform スタイル
+        // 実描画 (PlayerController.apply_caption_style() / App.vue の `.dplayer-video-wrap-aspect > canvas`) と
+        // 完全に同じ式を用いることで、プレビューが実際の見え方を正確に再現するようにする
+        captionLayerStyle(): Record<string, string> {
+            const settings = this.settingsStore.settings;
+            // specify_ フラグがオフのときはデフォルト値 (scale=1.0, offset=30) を使用する
+            const scale = settings.specify_caption_text_scale ? settings.caption_text_scale : 1.0;
+            const offset = settings.specify_caption_vertical_position ? settings.caption_vertical_position_offset : 30;
+            // 座標系変換: 0=画面下端, 100=画面上端, 30=字幕の自然位置
+            // CSS の translateY は負が上方向なので、(30 - offset)% で正しく対応する
+            return {
+                transform: `translateY(${30 - offset}%) scale(${scale})`,
+                transformOrigin: 'bottom center',
+            };
+        },
+
+        // プレビューの字幕テキストに適用するフォント・縁取り・背景スタイル
+        // PlayerController の DPlayer 初期化時 (aribb24 オプション) のロジックを CSS に置き換えて再現する
+        captionTextStyle(): Record<string, string> {
+            const settings = this.settingsStore.settings;
+            const style: Record<string, string> = {};
+
+            // フォント: PlayerController の normalFont と同じスタックを組み立てる
+            let font = settings.caption_font;
+            if (font === 'sans-serif') {
+                style.fontFamily = 'sans-serif';
+            } else {
+                if (font === 'Yu Gothic') {
+                    // 游ゴシックのみ、Windows と Mac で名前が異なる
+                    font = 'Yu Gothic Medium","Yu Gothic","YuGothic';
+                }
+                style.fontFamily = `"${font}", "Rounded M+ 1m for ARIB", sans-serif`;
+            }
+
+            // 縁取り: always_border_caption_text がオンのとき、黒の text-shadow を多重がけして縁取りを再現する
+            if (settings.always_border_caption_text === true) {
+                style.textShadow = '1px 1px 1.5px #000, -1px 1px 1.5px #000, 1px -1px 1.5px #000, -1px -1px 1.5px #000';
+            } else {
+                style.textShadow = 'none';
+            }
+
+            // 背景 (不透明度): specify_caption_opacity がオンのときは指定値、オフのときは字幕データ依存で値不明のため
+            // 見た目維持用に控えめなデフォルト背景 (rgba(0, 0, 0, 0.5)) を使う
+            if (settings.specify_caption_opacity === true) {
+                style.backgroundColor = `rgba(0, 0, 0, ${settings.caption_opacity})`;
+            } else {
+                style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+            }
+
+            return style;
+        },
     }
 });
 
 </script>
+<style lang="scss" scoped>
+
+.caption-preview {
+    // 映像を模した字幕プレビュー画面
+    &__screen {
+        position: relative;
+        width: 100%;
+        max-width: 480px;
+        margin-top: 12px;
+        aspect-ratio: 16 / 9;
+        border-radius: 6px;
+        overflow: hidden;
+        // 映像っぽさを出すための控えめなグラデーション背景
+        background: linear-gradient(135deg, #2a3340 0%, #1a2028 60%, #10141a 100%);
+    }
+
+    // 字幕レイヤー: 実描画の Canvas と同じくフルサイズに敷き、transform を適用する
+    // transform / transform-origin は :style バインド (captionLayerStyle) 側で指定する
+    &__layer {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+    }
+
+    // 字幕テキスト: ARIB の自然表示位置 (画面下端から約 30%) に左右中央で配置する
+    // font-family / text-shadow / background-color は :style バインド (captionTextStyle) 側で指定する
+    &__text {
+        position: absolute;
+        left: 50%;
+        bottom: 30%;
+        transform: translateX(-50%);
+        max-width: 92%;
+        padding: 2px 6px;
+        color: #ffffff;
+        text-align: center;
+        // 画面幅に応じて字幕サイズが変わるよう、ビューポート相対ではなく画面枠相対の単位を使いたいが、
+        // CSS のみでは難しいため、視認しやすい固定サイズを基準とする (文字サイズ倍率は layer 側の scale で反映)
+        font-size: 18px;
+        font-weight: bold;
+        line-height: 1.4;
+        // 画面幅が狭いときに左右端で文字が見切れないよう、nowrap にはせず折り返しを許可する
+        word-break: break-word;
+    }
+}
+
+</style>
