@@ -102,7 +102,9 @@ export interface ILocalClientSettings extends IClientSettings {
     always_border_caption_text: boolean;
     specify_caption_opacity: boolean;
     caption_opacity: number;
+    specify_caption_text_scale: boolean;
     caption_text_scale: number;
+    specify_caption_vertical_position: boolean;
     caption_vertical_position_offset: number;
     tv_show_superimpose: boolean;
     video_show_superimpose: boolean;
@@ -282,8 +284,12 @@ export const ILocalClientSettingsDefault: ILocalClientSettings = {
     specify_caption_opacity: false,
     // 字幕の不透明度 (Default: 50%)
     caption_opacity: 0.5,
+    // 字幕の文字サイズを指定する (Default: 指定しない)
+    specify_caption_text_scale: false,
     // 字幕の文字サイズ倍率 (Default: 1.0 = 標準サイズ)
     caption_text_scale: 1.0,
+    // 字幕の縦位置を指定する (Default: 指定しない)
+    specify_caption_vertical_position: false,
     // 字幕の縦位置 (Default: 30 = 字幕の通常表示位置、0 が画面下端・100 が画面上端)
     caption_vertical_position_offset: 30,
     // テレビをみるときに文字スーパーを表示する (Default: 表示する)
@@ -419,7 +425,9 @@ export const SYNCABLE_SETTINGS_KEYS: (keyof IClientSettings)[] = [
     'always_border_caption_text',
     'specify_caption_opacity',
     'caption_opacity',
+    'specify_caption_text_scale',
     'caption_text_scale',
+    'specify_caption_vertical_position',
     'caption_vertical_position_offset',
     'tv_show_superimpose',
     'video_show_superimpose',

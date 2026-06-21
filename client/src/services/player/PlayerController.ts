@@ -739,8 +739,13 @@ class PlayerController {
         const apply_caption_style = () => {
             if (this.player === null) return;
             const container = this.player.container;
-            const scale = settings_store.settings.caption_text_scale;
-            const offset = settings_store.settings.caption_vertical_position_offset;
+            // specify_ フラグがオフのときはデフォルト値 (scale=1.0, offset=30) を使用する
+            const scale = settings_store.settings.specify_caption_text_scale
+                ? settings_store.settings.caption_text_scale
+                : 1.0;
+            const offset = settings_store.settings.specify_caption_vertical_position
+                ? settings_store.settings.caption_vertical_position_offset
+                : 30;
             container.style.setProperty('--caption-text-scale', String(scale));
             // 座標系変換: 0=画面下端, 100=画面上端, 30=字幕の自然位置 (ARIB B24 の描画位置がキャンバス上端から約70%)
             // CSS の translateY は負が上方向なので、(30 - offset)% で正しく対応する
@@ -749,7 +754,9 @@ class PlayerController {
         // 設定値が変更されたときに即座にプレイヤー側へ反映する
         // immediate: true により、watch 登録時点でも初期値が適用される
         this.caption_style_watchers = [
+            watch(() => settings_store.settings.specify_caption_text_scale, apply_caption_style, { immediate: true }),
             watch(() => settings_store.settings.caption_text_scale, apply_caption_style, { immediate: true }),
+            watch(() => settings_store.settings.specify_caption_vertical_position, apply_caption_style, { immediate: true }),
             watch(() => settings_store.settings.caption_vertical_position_offset, apply_caption_style, { immediate: true }),
         ];
 

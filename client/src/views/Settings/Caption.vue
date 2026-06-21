@@ -51,25 +51,47 @@
                     </v-slider>
                 </div>
             </div>
-            <div class="settings__item">
+            <div class="settings__item settings__item--switch">
+                <label class="settings__item-heading" for="specify_caption_text_scale">字幕の文字サイズを指定する</label>
+                <label class="settings__item-label" for="specify_caption_text_scale">
+                    オフのときは、標準サイズ（1.0）で描画します。<br>
+                    プロジェクターなど画面サイズが大きい場合に調整すると便利です。<br>
+                </label>
+                <v-switch class="settings__item-switch" color="primary" id="specify_caption_text_scale" hide-details
+                    v-model="settingsStore.settings.specify_caption_text_scale">
+                </v-switch>
+            </div>
+            <div class="settings__item" :class="{'settings__item--disabled': settingsStore.settings.specify_caption_text_scale === false}">
                 <label class="settings__item-heading">字幕の文字サイズ</label>
                 <label class="settings__item-label">
-                    字幕の文字サイズを倍率で調整します。1.0 が標準サイズです。小さくしたい場合は 1.0 より小さい値、大きくしたい場合は 1.0 より大きい値を設定してください。<br>
+                    上の [字幕の文字サイズを指定する] をオンに設定したときのみ有効です。1.0 が標準サイズです。小さくしたい場合は 1.0 より小さい値、大きくしたい場合は 1.0 より大きい値を設定してください。<br>
                 </label>
                 <div class="settings__item-label">
                     <v-slider class="settings__item-form" color="primary" show-ticks="always" thumb-label hide-details
-                        :min="0.3" :max="1.5" :step="0.1" v-model="settingsStore.settings.caption_text_scale">
+                        :min="0.3" :max="1.5" :step="0.1" v-model="settingsStore.settings.caption_text_scale"
+                        :disabled="settingsStore.settings.specify_caption_text_scale === false">
                     </v-slider>
                 </div>
             </div>
-            <div class="settings__item">
+            <div class="settings__item settings__item--switch">
+                <label class="settings__item-heading" for="specify_caption_vertical_position">字幕の縦位置を指定する</label>
+                <label class="settings__item-label" for="specify_caption_vertical_position">
+                    オフのときは、字幕の通常表示位置（30）で描画します。<br>
+                    文字サイズの変更した際に、字幕の位置を上下に調整したい場合に便利です。<br>
+                </label>
+                <v-switch class="settings__item-switch" color="primary" id="specify_caption_vertical_position" hide-details
+                    v-model="settingsStore.settings.specify_caption_vertical_position">
+                </v-switch>
+            </div>
+            <div class="settings__item" :class="{'settings__item--disabled': settingsStore.settings.specify_caption_vertical_position === false}">
                 <label class="settings__item-heading">字幕の縦位置</label>
                 <label class="settings__item-label">
-                    字幕の縦位置を調整します。0 が画面下端、100 が画面上端で、値を大きくするほど上方向に移動します。初期値の 30 が字幕の通常表示位置です。<br>
+                    上の [字幕の縦位置を指定する] をオンに設定したときのみ有効です。0 が画面下端、100 が画面上端で、値を大きくするほど上方向に移動します。初期値の 30 が字幕の通常表示位置です。<br>
                 </label>
                 <div class="settings__item-label">
                     <v-slider class="settings__item-form" color="primary" show-ticks="always" thumb-label hide-details
-                        :min="0" :max="100" :step="10" v-model="settingsStore.settings.caption_vertical_position_offset">
+                        :min="0" :max="100" :step="10" v-model="settingsStore.settings.caption_vertical_position_offset"
+                        :disabled="settingsStore.settings.specify_caption_vertical_position === false">
                     </v-slider>
                 </div>
             </div>
