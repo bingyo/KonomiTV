@@ -231,6 +231,35 @@ export default defineComponent({
 <style lang="scss" scoped>
 
 .caption-preview {
+    position: sticky !important;
+    top: 65px;
+    z-index: 4;
+    // 共通の settings__item は position: relative; を持つため、sticky を明示的に優先する
+    // 上側の余白は settings__content の既存 margin に任せ、字幕ページの見出し直下が間延びしないようにする
+    margin-top: 0 !important;
+    padding-top: 0px;
+    padding-bottom: 16px;
+    border-bottom: 2px solid rgb(var(--v-theme-background-lighten-2));
+    background-color: rgb(var(--v-theme-background-lighten-1));
+    box-shadow: 0px 10px 12px -14px rgb(0 0 0 / 45%);
+    @include smartphone-horizontal {
+        top: 0px;
+        padding-top: 0px;
+        padding-bottom: 12px;
+    }
+    @include smartphone-vertical {
+        top: 60px;
+        padding-top: 0px;
+        padding-bottom: 12px;
+        background-color: rgb(var(--v-theme-background));
+    }
+
+    .settings__item-label {
+        @include smartphone-horizontal {
+            margin-top: 6px;
+        }
+    }
+
     // 映像を模した字幕プレビュー画面
     &__screen {
         position: relative;
@@ -242,6 +271,13 @@ export default defineComponent({
         overflow: hidden;
         // 映像っぽさを出すための控えめなグラデーション背景
         background: linear-gradient(135deg, #2a3340 0%, #1a2028 60%, #10141a 100%);
+        @include smartphone-horizontal {
+            max-width: 320px;
+            margin-top: 10px;
+        }
+        @include smartphone-vertical {
+            margin-top: 10px;
+        }
     }
 
     // 字幕レイヤー: 実描画の Canvas と同じくフルサイズに敷き、transform を適用する
@@ -273,6 +309,15 @@ export default defineComponent({
         line-height: 1.4;
         // 画面幅が狭いときに左右端で文字が見切れないよう、nowrap にはせず折り返しを許可する
         word-break: break-word;
+        @include smartphone-horizontal {
+            font-size: 14px;
+        }
+        @include smartphone-vertical {
+            font-size: 14px;
+        }
+        @include smartphone-vertical-short {
+            font-size: 13px;
+        }
     }
 }
 
