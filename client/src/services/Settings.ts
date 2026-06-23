@@ -74,8 +74,6 @@ export interface IClientSettings {
     caption_opacity: number;
     specify_caption_text_scale: boolean;
     caption_text_scale: number;
-    specify_caption_vertical_position: boolean;
-    caption_vertical_position_offset: number;
     tv_show_superimpose: boolean;
     video_show_superimpose: boolean;
     // tv_show_data_broadcasting: 同期無効

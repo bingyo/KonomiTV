@@ -10,7 +10,7 @@
         </h2>
         <div class="settings__content">
             <!-- 字幕設定のライブプレビュー -->
-            <!-- 下の各設定 (フォント・縁取り・不透明度・文字サイズ・縦位置) の値をリアルタイムに反映し、
+            <!-- 下の各設定 (フォント・縁取り・不透明度・文字サイズ) の値をリアルタイムに反映し、
                  設定画面から離れることなく、実際の見え方を確認できるようにする -->
             <div class="settings__item caption-preview">
                 <label class="settings__item-heading">プレビュー</label>
@@ -91,28 +91,6 @@
                     </v-slider>
                 </div>
             </div>
-            <div class="settings__item settings__item--switch">
-                <label class="settings__item-heading" for="specify_caption_vertical_position">字幕の縦位置を指定する</label>
-                <label class="settings__item-label" for="specify_caption_vertical_position">
-                    オフのときは、字幕の通常表示位置（30）で描画します。<br>
-                    文字サイズの変更した際に、字幕の位置を上下に調整したい場合に便利です。<br>
-                </label>
-                <v-switch class="settings__item-switch" color="primary" id="specify_caption_vertical_position" hide-details
-                    v-model="settingsStore.settings.specify_caption_vertical_position">
-                </v-switch>
-            </div>
-            <div class="settings__item" :class="{'settings__item--disabled': settingsStore.settings.specify_caption_vertical_position === false}">
-                <label class="settings__item-heading">字幕の縦位置</label>
-                <label class="settings__item-label">
-                    上の [字幕の縦位置を指定する] をオンに設定したときのみ有効です。0 が画面下端、100 が画面上端で、値を大きくするほど上方向に移動します。初期値の 30 が字幕の通常表示位置です。<br>
-                </label>
-                <div class="settings__item-label">
-                    <v-slider class="settings__item-form" color="primary" show-ticks="always" thumb-label hide-details
-                        :min="0" :max="100" :step="10" v-model="settingsStore.settings.caption_vertical_position_offset"
-                        :disabled="settingsStore.settings.specify_caption_vertical_position === false">
-                    </v-slider>
-                </div>
-            </div>
             <v-divider class="mt-6"></v-divider>
             <div class="settings__item settings__item--switch">
                 <label class="settings__item-heading" for="tv_show_superimpose">テレビをみるときに文字スーパーを表示する</label>
@@ -178,13 +156,10 @@ export default defineComponent({
         // 完全に同じ式を用いることで、プレビューが実際の見え方を正確に再現するようにする
         captionLayerStyle(): Record<string, string> {
             const settings = this.settingsStore.settings;
-            // specify_ フラグがオフのときはデフォルト値 (scale=1.0, offset=30) を使用する
+            // specify_ フラグがオフのときはデフォルト値 (scale=1.0) を使用する
             const scale = settings.specify_caption_text_scale ? settings.caption_text_scale : 1.0;
-            const offset = settings.specify_caption_vertical_position ? settings.caption_vertical_position_offset : 30;
-            // 座標系変換: 0=画面下端, 100=画面上端, 30=字幕の自然位置
-            // CSS の translateY は負が上方向なので、(30 - offset)% で正しく対応する
             return {
-                transform: `translateY(${30 - offset}%) scale(${scale})`,
+                transform: `scale(${scale})`,
                 transformOrigin: 'bottom center',
             };
         },

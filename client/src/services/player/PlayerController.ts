@@ -90,7 +90,7 @@ class PlayerController {
     // L字画面のクロップ設定で使うウォッチャーを保持する配列
     private lshaped_screen_crop_watchers: (() => void)[] = [];
 
-    // 字幕の表示スタイル (文字サイズ・縦位置) を CSS カスタムプロパティへ反映するウォッチャーを保持する配列
+    // 字幕の表示スタイル (文字サイズ) を CSS カスタムプロパティへ反映するウォッチャーを保持する配列
     // destroy() 時に解放することで、チャンネル切替などで PlayerController が作り直されてもリスナーが累積しないようにする
     private caption_style_watchers: (() => void)[] = [];
 
@@ -731,7 +731,7 @@ class PlayerController {
             }
         });
 
-        // 字幕の文字サイズ倍率・縦位置の設定値を、プレイヤーコンテナの CSS カスタムプロパティに反映する
+        // 字幕の文字サイズ倍率の設定値を、プレイヤーコンテナの CSS カスタムプロパティに反映する
         // ARIB B24 字幕の Canvas に対するスタイルは App.vue 側のグローバル CSS (.dplayer-video-wrap-aspect > canvas)
         // で定義しており、ここでセットした CSS 変数を介して Canvas に transform が適用される
         // CSS のみで完結させることで、Canvas が動的に追加されたタイミングでも自動的にスタイルが反映され、
@@ -739,25 +739,17 @@ class PlayerController {
         const apply_caption_style = () => {
             if (this.player === null) return;
             const container = this.player.container;
-            // specify_ フラグがオフのときはデフォルト値 (scale=1.0, offset=30) を使用する
+            // specify_ フラグがオフのときはデフォルト値 (scale=1.0) を使用する
             const scale = settings_store.settings.specify_caption_text_scale
                 ? settings_store.settings.caption_text_scale
                 : 1.0;
-            const offset = settings_store.settings.specify_caption_vertical_position
-                ? settings_store.settings.caption_vertical_position_offset
-                : 30;
             container.style.setProperty('--caption-text-scale', String(scale));
-            // 座標系変換: 0=画面下端, 100=画面上端, 30=字幕の自然位置 (ARIB B24 の描画位置がキャンバス上端から約70%)
-            // CSS の translateY は負が上方向なので、(30 - offset)% で正しく対応する
-            container.style.setProperty('--caption-vertical-offset-percent', `${30 - offset}%`);
         };
         // 設定値が変更されたときに即座にプレイヤー側へ反映する
         // immediate: true により、watch 登録時点でも初期値が適用される
         this.caption_style_watchers = [
             watch(() => settings_store.settings.specify_caption_text_scale, apply_caption_style, { immediate: true }),
             watch(() => settings_store.settings.caption_text_scale, apply_caption_style, { immediate: true }),
-            watch(() => settings_store.settings.specify_caption_vertical_position, apply_caption_style, { immediate: true }),
-            watch(() => settings_store.settings.caption_vertical_position_offset, apply_caption_style, { immediate: true }),
         ];
 
         // デバッグ用にプレイヤーインスタンスも window 直下に入れる
@@ -2130,7 +2122,7 @@ class PlayerController {
             this.lshaped_screen_crop_watchers = [];
         }
 
-        // 字幕スタイル (文字サイズ・縦位置) のウォッチャーを破棄
+        // 字幕スタイル (文字サイズ) のウォッチャーを破棄
         // チャンネル切替などで PlayerController を再初期化したときにウォッチャーが累積しないようにする
         if (this.caption_style_watchers.length > 0) {
             this.caption_style_watchers.forEach((unwatcher) => unwatcher());

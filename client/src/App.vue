@@ -283,13 +283,13 @@ body .route-container {
 
 // ***** DPlayer / 字幕レンダリングのスタイル上書き *****
 
-// ARIB B24 字幕 (aribb24.js) の Canvas に対する文字サイズ・縦位置の調整
+// ARIB B24 字幕 (aribb24.js) の Canvas に対する文字サイズの調整
 // aribb24.js は字幕パケット受信時に動的に Canvas を `.dplayer-video-wrap-aspect` 配下へ挿入するが、
 // クラス名が付与されないため要素位置で指定している (DPlayer のコメント描画は <div> なのでマッチしない)
-// 倍率・縦位置は PlayerController から SettingsStore の値を CSS カスタムプロパティに同期しており、
+// 倍率は PlayerController から SettingsStore の値を CSS カスタムプロパティに同期しており、
 // CSS のみでスタイルを完結させることで、Canvas 動的挿入時の MutationObserver や resize リスナーを不要にしている
 .dplayer-video-wrap-aspect > canvas {
-    transform: translateY(var(--caption-vertical-offset-percent, 0%)) scale(var(--caption-text-scale, 1));
+    transform: scale(var(--caption-text-scale, 1));
     transform-origin: bottom center;
     pointer-events: none;
     will-change: transform;
