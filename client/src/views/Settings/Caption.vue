@@ -19,10 +19,11 @@
                 </label>
                 <!-- 映像を模した 16:9 のダーク背景。字幕レイヤーの transform 基準となるよう relative にする -->
                 <div class="caption-preview__screen">
-                    <!-- 字幕レイヤー: 実描画 (App.vue の `.dplayer-video-wrap-aspect > canvas`) と同じく
-                         フルサイズに敷き、transform-origin: bottom center で transform を適用する -->
-                    <div class="caption-preview__layer" :style="captionLayerStyle">
-                        <!-- 字幕テキスト: ARIB の自然表示位置 (画面下端から約 30%) に配置する -->
+                    <!-- 字幕レイヤー: 実描画 (App.vue の `.dplayer-video-wrap-aspect > canvas`) と同じくフルサイズに敷く -->
+                    <div class="caption-preview__layer">
+                        <!-- 字幕テキスト: ARIB の自然表示位置 (画面下端から約 30%) に配置する
+                             実描画では字幕の実描画中心を transform-origin にして「その場で拡大縮小」されるため、
+                             プレビューでもテキスト自身を中心基準でスケールし、サイズ変更時に位置がズレないようにする -->
                         <span class="caption-preview__text" :style="captionTextStyle">こんばんは。今日のニュースをお伝えします。</span>
                     </div>
                 </div>
@@ -151,24 +152,18 @@ export default defineComponent({
     computed: {
         ...mapStores(useSettingsStore),
 
-        // プレビューの字幕レイヤーに適用する transform スタイル
-        // 実描画 (PlayerController.apply_caption_style() / App.vue の `.dplayer-video-wrap-aspect > canvas`) と
-        // 完全に同じ式を用いることで、プレビューが実際の見え方を正確に再現するようにする
-        captionLayerStyle(): Record<string, string> {
-            const settings = this.settingsStore.settings;
-            // specify_ フラグがオフのときはデフォルト値 (scale=1.0) を使用する
-            const scale = settings.specify_caption_text_scale ? settings.caption_text_scale : 1.0;
-            return {
-                transform: `scale(${scale})`,
-                transformOrigin: 'bottom center',
-            };
-        },
-
-        // プレビューの字幕テキストに適用するフォント・縁取り・背景スタイル
+        // プレビューの字幕テキストに適用するフォント・縁取り・背景・文字サイズスタイル
         // PlayerController の DPlayer 初期化時 (aribb24 オプション) のロジックを CSS に置き換えて再現する
+        // 文字サイズ倍率は、実描画が字幕の実描画中心を transform-origin にして「その場で拡大縮小」する挙動に合わせ、
+        // テキスト要素自身を transform-origin: center でスケールすることで、サイズ変更時に位置がズレないようにする
         captionTextStyle(): Record<string, string> {
             const settings = this.settingsStore.settings;
             const style: Record<string, string> = {};
+
+            // 文字サイズ倍率: specify_ フラグがオフのときはデフォルト値 (scale=1.0) を使用する
+            const scale = settings.specify_caption_text_scale ? settings.caption_text_scale : 1.0;
+            style.transform = `translateX(-50%) scale(${scale})`;
+            style.transformOrigin = 'center';
 
             // フォント: PlayerController の normalFont と同じスタックを組み立てる
             let font = settings.caption_font;
@@ -255,8 +250,7 @@ export default defineComponent({
         }
     }
 
-    // 字幕レイヤー: 実描画の Canvas と同じくフルサイズに敷き、transform を適用する
-    // transform / transform-origin は :style バインド (captionLayerStyle) 側で指定する
+    // 字幕レイヤー: 実描画の Canvas と同じくフルサイズに敷く (スケールはテキスト要素自身に適用する)
     &__layer {
         position: absolute;
         top: 0;
@@ -267,18 +261,18 @@ export default defineComponent({
     }
 
     // 字幕テキスト: ARIB の自然表示位置 (画面下端から約 30%) に左右中央で配置する
-    // font-family / text-shadow / background-color は :style バインド (captionTextStyle) 側で指定する
+    // font-family / text-shadow / background-color / transform (左右中央寄せ + 文字サイズ倍率のスケール) は
+    // :style バインド (captionTextStyle) 側で指定する
     &__text {
         position: absolute;
         left: 50%;
         bottom: 30%;
-        transform: translateX(-50%);
         max-width: 92%;
         padding: 2px 6px;
         color: #ffffff;
         text-align: center;
         // 画面幅に応じて字幕サイズが変わるよう、ビューポート相対ではなく画面枠相対の単位を使いたいが、
-        // CSS のみでは難しいため、視認しやすい固定サイズを基準とする (文字サイズ倍率は layer 側の scale で反映)
+        // CSS のみでは難しいため、視認しやすい固定サイズを基準とする (文字サイズ倍率は :style 側の scale で反映)
         font-size: 18px;
         font-weight: bold;
         line-height: 1.4;

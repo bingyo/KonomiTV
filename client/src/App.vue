@@ -288,6 +288,8 @@ body .route-container {
 // クラス名が付与されないため要素位置で指定している (DPlayer のコメント描画は <div> なのでマッチしない)
 // 倍率は PlayerController から SettingsStore の値を CSS カスタムプロパティに同期しており、
 // CSS のみでスタイルを完結させることで、Canvas 動的挿入時の MutationObserver や resize リスナーを不要にしている
+// なお transform-origin の bottom center はあくまで既定値で、文字サイズ倍率が 1.0 以外のときは PlayerController が
+// 字幕の実描画中心を字幕 Canvas の transform-origin に inline で動的上書きする (拡大時の位置ズレ補正のため)
 .dplayer-video-wrap-aspect > canvas {
     transform: scale(var(--caption-text-scale, 1));
     transform-origin: bottom center;

@@ -94,6 +94,15 @@ class PlayerController {
     // destroy() 時に解放することで、チャンネル切替などで PlayerController が作り直されてもリスナーが累積しないようにする
     private caption_style_watchers: (() => void)[] = [];
 
+    // 字幕の拡大ピボット追跡に使う requestAnimationFrame のハンドル (追跡停止判定・二重起動防止・破棄時の解放に用いる)
+    // 文字サイズ倍率が 1.0 以外のときだけループを回し、字幕の実描画中心を transform-origin に動的反映する
+    // null のときはループ未起動 (= 倍率 1.0 / 字幕サイズ指定オフの常用パスではゼロコスト)
+    private caption_pivot_raf: number | null = null;
+    // ピボット再計算のスロットリング用の最終計算時刻 (ミリ秒) と、前回計算時の字幕テキスト内容
+    // 約 150ms 間隔かつテキスト内容が変化したときのみ Canvas を走査することで、静止字幕表示中の計算コストを実質ゼロにする
+    private caption_pivot_last_compute_time: number = 0;
+    private caption_pivot_last_text: string | null = null;
+
     // 破棄中かどうか
     // 破棄中は destroy() が呼ばれても何もしない
     private destroying = false;
@@ -755,6 +764,9 @@ class PlayerController {
                 ? settings_store.settings.caption_text_scale
                 : 1.0;
             container.style.setProperty('--caption-text-scale', String(scale));
+            // 文字サイズ倍率に応じて、字幕の拡大ピボット追跡の開始/停止を切り替える
+            // 倍率が 1.0 のときは scale(1) で何も動かないため追跡不要 (常用パスのコストをゼロに保つ)
+            this.updateCaptionPivotTracking(scale);
         };
         // 設定値が変更されたときに即座にプレイヤー側へ反映する
         // immediate: true により、watch 登録時点でも初期値が適用される
@@ -1025,6 +1037,185 @@ class PlayerController {
         await Promise.all(this.player_managers.map((player_manager) => player_manager.init()));
 
         console.log('\u001b[31m[PlayerController] Initialized.');
+    }
+
+
+    /**
+     * 字幕の文字サイズ倍率に応じて、字幕の拡大ピボット追跡 (requestAnimationFrame ループ) の開始/停止を切り替える
+     * 倍率が 1.0 (= 等倍) のときは scale(1) で字幕が一切移動しないため追跡は不要で、常用パスのコストをゼロに保つ
+     * @param scale 現在の字幕の文字サイズ倍率
+     */
+    private updateCaptionPivotTracking(scale: number): void {
+        if (scale !== 1.0) {
+            this.startCaptionPivotTracking();
+        } else {
+            this.stopCaptionPivotTracking();
+        }
+    }
+
+
+    /**
+     * 字幕の拡大ピボット追跡を開始する
+     * 字幕は映像フレーム全体を覆う 1 枚の Canvas に描画され、App.vue の CSS で transform: scale() が
+     * transform-origin: bottom center で適用されるが、これだと拡大時に字幕がピボット (画面下端中央) から離れる方向
+     * (横書きは左上・縦書きは右上) へズレてしまう。スケールのピボットが字幕の実描画位置と一致していないことが原因である。
+     * そこで requestAnimationFrame で字幕の実描画範囲のバウンディングボックス中心を求め、その中心を字幕 Canvas の
+     * transform-origin に動的反映することで、書字方向や位置に関係なく字幕がその場で拡大縮小されるようにする。
+     * このループはコードベースの「CSS のみ・監視なし」方針からは外れるが、(1) 倍率 1.0 のときは起動しない、
+     * (2) 字幕非表示中は Canvas 走査をスキップする、(3) 表示中も約 150ms 間隔かつテキスト変化時のみ走査する、
+     * (4) タブ非表示中は rAF が自動停止する、と多重にゲートしているため追加コストは十分に抑えられている。
+     */
+    private startCaptionPivotTracking(): void {
+        // すでに起動済みなら二重起動しない
+        if (this.caption_pivot_raf !== null) return;
+        // 次回の tick で必ず再計算されるよう、スロットリング・テキストのキャッシュをリセットする
+        this.caption_pivot_last_compute_time = 0;
+        this.caption_pivot_last_text = null;
+
+        // 1 フレームごとに呼ばれるループ本体
+        // updateCaptionPivot() 内で表示状態・スロットリングを判定するため、ここでは単純に次フレームを予約し続ける
+        const tick = () => {
+            this.updateCaptionPivot();
+            this.caption_pivot_raf = requestAnimationFrame(tick);
+        };
+        this.caption_pivot_raf = requestAnimationFrame(tick);
+    }
+
+
+    /**
+     * 字幕の拡大ピボット追跡を停止し、字幕 Canvas に inline で当てていた transform-origin を解除して既定に戻す
+     * inline スタイルを空にすることで、App.vue の CSS ルール (transform-origin: bottom center) にフォールバックする
+     * チャンネル切替・再初期化時のループ累積を防ぐため destroy() からも呼ばれる
+     */
+    private stopCaptionPivotTracking(): void {
+        if (this.caption_pivot_raf !== null) {
+            cancelAnimationFrame(this.caption_pivot_raf);
+            this.caption_pivot_raf = null;
+        }
+        // inline で上書きしていた transform-origin を解除し、App.vue の CSS ルール (bottom center) に戻す
+        const view_canvas = this.getCaptionViewCanvas();
+        if (view_canvas !== null) {
+            view_canvas.style.transformOrigin = '';
+        }
+        this.caption_pivot_last_text = null;
+    }
+
+
+    /**
+     * 表示中の字幕 Canvas (App.vue の CSS で transform される実体) の DOM 要素を取得する
+     * aribb24.js のレンダラーは画面表示用の viewCanvas とオフスクリーンの rawCanvas を持つが、
+     * transform-origin を当てる対象は前者なので getViewCanvas() を用いる
+     * @returns 字幕の viewCanvas 要素。取得できない場合は null
+     */
+    private getCaptionViewCanvas(): HTMLCanvasElement | null {
+        if (this.player === null) return null;
+        // aribb24.js (字幕) のレンダラーを取得する
+        // 型に getViewCanvas / isShowing / isPresent が宣言されていないため as any でアクセスする (CaptureManager と同じパターン)
+        const aribb24_caption = this.player.plugins.aribb24Caption as any;
+        if (aribb24_caption == null || typeof aribb24_caption.getViewCanvas !== 'function') return null;
+        return aribb24_caption.getViewCanvas() ?? null;
+    }
+
+
+    /**
+     * 字幕の実描画範囲の中心を求め、字幕 Canvas の transform-origin に inline で反映する (rAF ループから毎フレーム呼ばれる)
+     * 計算コストを抑えるため、字幕が表示されているとき、かつ約 150ms 間隔・テキスト内容変化時のみ Canvas を走査する
+     */
+    private updateCaptionPivot(): void {
+        if (this.player === null) return;
+        // aribb24.js (字幕) のレンダラーを取得する (PlayerController の実装上、字幕レンダラーは必ず有効)
+        const aribb24_caption = this.player.plugins.aribb24Caption as any;
+        if (aribb24_caption == null) return;
+
+        // 表示中の Canvas 要素 (transform-origin を当てる対象) を取得する
+        const view_canvas = this.getCaptionViewCanvas();
+        if (view_canvas === null) return;
+
+        // 字幕が実際に表示されているか (字幕データは存在するが非表示の場合は false)
+        const is_caption_showing = aribb24_caption.isShowing === true
+            && typeof aribb24_caption.isPresent === 'function' && aribb24_caption.isPresent() === true;
+        // 字幕が表示されていないときは、inline の transform-origin を解除して既定 (bottom center) に戻し、走査は行わない
+        if (is_caption_showing === false) {
+            if (view_canvas.style.transformOrigin !== '') {
+                view_canvas.style.transformOrigin = '';
+            }
+            this.caption_pivot_last_text = null;
+            return;
+        }
+
+        // スロットリング: 前回の計算から 150ms 未満なら再計算しない (rAF ごとの getImageData コストを抑える)
+        const now = performance.now();
+        if (now - this.caption_pivot_last_compute_time < 150) return;
+        this.caption_pivot_last_compute_time = now;
+
+        // テキスト内容が前回から変化していなければピボットも変わらないため再計算しない (静止字幕表示中のコストを実質ゼロにする)
+        const caption_text = typeof aribb24_caption.getTextContent === 'function'
+            ? (aribb24_caption.getTextContent() as string | null)
+            : null;
+        if (caption_text !== null && caption_text === this.caption_pivot_last_text) return;
+        this.caption_pivot_last_text = caption_text;
+
+        // 字幕の実描画範囲のバウンディングボックス中心を求める
+        // 画面表示用 viewCanvas は DPR 倍の解像度になりうるため、まず映像解像度の rawCanvas を優先して走査する
+        // (比率さえ求まればどちらの Canvas でも結果は同じ。rawCanvas が使えない場合は viewCanvas にフォールバックする)
+        const raw_canvas: HTMLCanvasElement | null = typeof aribb24_caption.getRawCanvas === 'function'
+            ? (aribb24_caption.getRawCanvas() ?? null)
+            : null;
+        const scan_canvas = raw_canvas ?? view_canvas;
+        const pivot = this.computeCaptionPivotCenter(scan_canvas);
+        // 非透明画素が見つからなかった場合は既定 (bottom center) に戻す
+        if (pivot === null) {
+            if (view_canvas.style.transformOrigin !== '') {
+                view_canvas.style.transformOrigin = '';
+            }
+            return;
+        }
+        // 求めた中心 (0..1) を % に変換し、viewCanvas に inline で transform-origin を反映する
+        // inline スタイルは App.vue の CSS ルールより優先されるため、scale はそのままピボットだけが上書きされる
+        view_canvas.style.transformOrigin = `${pivot.x * 100}% ${pivot.y * 100}%`;
+    }
+
+
+    /**
+     * 指定した Canvas のアルファチャンネルを走査し、非透明画素の範囲 (バウンディングボックス) の中心を 0..1 の比率で求める
+     * 計算コストを抑えるため 4px ストライドでサンプリングする (字幕は大きな塊なので粗いサンプリングでもピボットには十分)
+     * @param canvas 走査対象の Canvas (字幕が描画済みのもの)
+     * @returns 非透明画素範囲の中心比率 {x, y}。非透明画素が一つもない場合は null
+     */
+    private computeCaptionPivotCenter(canvas: HTMLCanvasElement): {x: number; y: number} | null {
+        const width = canvas.width;
+        const height = canvas.height;
+        if (width === 0 || height === 0) return null;
+        // willReadFrequently は DPlayer 側で生成された Canvas のため指定できないが、走査頻度は 150ms 間隔に絞っているため許容する
+        const context = canvas.getContext('2d');
+        if (context === null) return null;
+
+        // 字幕の全画素を取得し、アルファ値が閾値を超える画素の min/max 座標を求める
+        const image_data = context.getImageData(0, 0, width, height).data;
+        const STRIDE = 4;  // サンプリング間隔 (px)
+        const ALPHA_THRESHOLD = 8;  // アンチエイリアスの薄い画素を無視するためのアルファ閾値
+        let min_x = width, min_y = height, max_x = -1, max_y = -1;
+        for (let y = 0; y < height; y += STRIDE) {
+            // 行頭の画素インデックス (RGBA 4 バイト × 幅)
+            const row_offset = y * width * 4;
+            for (let x = 0; x < width; x += STRIDE) {
+                // 当該画素のアルファ値 (RGBA の 4 バイト目)
+                const alpha = image_data[row_offset + x * 4 + 3];
+                if (alpha > ALPHA_THRESHOLD) {
+                    if (x < min_x) min_x = x;
+                    if (x > max_x) max_x = x;
+                    if (y < min_y) min_y = y;
+                    if (y > max_y) max_y = y;
+                }
+            }
+        }
+        // 非透明画素が一つも見つからなかった場合は null を返す
+        if (max_x < 0 || max_y < 0) return null;
+
+        // バウンディングボックスの中心を 0..1 の比率に変換する (念のため [0, 1] にクランプする)
+        const center_x = Math.min(Math.max(((min_x + max_x) / 2) / width, 0), 1);
+        const center_y = Math.min(Math.max(((min_y + max_y) / 2) / height, 0), 1);
+        return {x: center_x, y: center_y};
     }
 
 
@@ -2179,6 +2370,10 @@ class PlayerController {
             this.caption_style_watchers.forEach((unwatcher) => unwatcher());
             this.caption_style_watchers = [];
         }
+
+        // 字幕の拡大ピボット追跡 (requestAnimationFrame ループ) を停止する
+        // チャンネル切替などで PlayerController を再初期化したときに rAF ループが累積しないようにする
+        this.stopCaptionPivotTracking();
 
         // DPlayer 本体を破棄
         // なぜか例外が出ることがあるので try-catch で囲む
