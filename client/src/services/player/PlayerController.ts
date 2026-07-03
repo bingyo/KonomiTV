@@ -102,6 +102,17 @@ class PlayerController {
     // 約 150ms 間隔かつテキスト内容が変化したときのみ Canvas を走査することで、静止字幕表示中の計算コストを実質ゼロにする
     private caption_pivot_last_compute_time: number = 0;
     private caption_pivot_last_text: string | null = null;
+    // 字幕ピボットの非同期走査が進行中かどうか (in-flight ガード)
+    // 進行中は新規の走査を発行しない (走査中にテキストが変化した場合は、完了後の tick で変化が再検出され改めて走査される)
+    private caption_pivot_scan_in_flight: boolean = false;
+    // 字幕ピボットの非同期走査の世代カウンタ
+    // 追跡停止・字幕非表示化のたびにインクリメントし、走査完了時に世代が一致しない結果 (陳腐化した結果) を破棄する
+    private caption_pivot_scan_generation: number = 0;
+    // 縮小読み戻し用の使い回しオフスクリーン Canvas とその 2D コンテキスト (初回走査時に遅延生成し、destroy() で解放する)
+    // willReadFrequently: true の極小 Canvas に GPU 縮小済み ImageBitmap を転写してから読み戻すことで、
+    // 映像解像度の Canvas 全面を GPU から同期読み戻しすること (非力な環境で画面全体が一瞬固まる要因) を避ける
+    private caption_pivot_scan_canvas: OffscreenCanvas | HTMLCanvasElement | null = null;
+    private caption_pivot_scan_context: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null = null;
 
     // 破棄中かどうか
     // 破棄中は destroy() が呼ばれても何もしない
@@ -1063,7 +1074,9 @@ class PlayerController {
      * transform-origin に動的反映することで、書字方向や位置に関係なく字幕がその場で拡大縮小されるようにする。
      * このループはコードベースの「CSS のみ・監視なし」方針からは外れるが、(1) 倍率 1.0 のときは起動しない、
      * (2) 字幕非表示中は Canvas 走査をスキップする、(3) 表示中も約 150ms 間隔かつテキスト変化時のみ走査する、
-     * (4) タブ非表示中は rAF が自動停止する、と多重にゲートしているため追加コストは十分に抑えられている。
+     * (4) タブ非表示中は rAF が自動停止する、(5) 走査自体も GPU 縮小した極小画像の非同期読み戻しで行い、
+     * 映像解像度の Canvas 全面を同期読み戻ししない (非力な環境でのフリーズ防止)、と多重にゲートしているため
+     * 追加コストは十分に抑えられている。
      */
     private startCaptionPivotTracking(): void {
         // すでに起動済みなら二重起動しない
@@ -1092,6 +1105,11 @@ class PlayerController {
             cancelAnimationFrame(this.caption_pivot_raf);
             this.caption_pivot_raf = null;
         }
+        // 進行中の非同期走査があれば、完了時に陳腐化した結果が反映されないよう世代カウンタを進めて無効化する
+        // (ここで解除した transform-origin を、後から完了した走査結果が再上書きしてしまうのを防ぐ)
+        // caption_pivot_scan_in_flight はリセットしない (実際の Promise の進行状態を表すフラグであり、
+        // 強制クリアすると直後に追跡が再開された場合に走査の二重発行を許してしまう。Promise は必ず settle して自ら false に戻す)
+        this.caption_pivot_scan_generation++;
         // inline で上書きしていた transform-origin を解除し、App.vue の CSS ルール (bottom center) に戻す
         const view_canvas = this.getCaptionViewCanvas();
         if (view_canvas !== null) {
@@ -1120,6 +1138,7 @@ class PlayerController {
     /**
      * 字幕の実描画範囲の中心を求め、字幕 Canvas の transform-origin に inline で反映する (rAF ループから毎フレーム呼ばれる)
      * 計算コストを抑えるため、字幕が表示されているとき、かつ約 150ms 間隔・テキスト内容変化時のみ Canvas を走査する
+     * 走査自体も GPU 縮小した極小画像の非同期読み戻し (scanCaptionPivotAsync) で行い、メインスレッドをブロックしない
      */
     private updateCaptionPivot(): void {
         if (this.player === null) return;
@@ -1136,17 +1155,23 @@ class PlayerController {
             && typeof aribb24_caption.isPresent === 'function' && aribb24_caption.isPresent() === true;
         // 字幕が表示されていないときは、inline の transform-origin を解除して既定 (bottom center) に戻し、走査は行わない
         if (is_caption_showing === false) {
-            if (view_canvas.style.transformOrigin !== '') {
-                view_canvas.style.transformOrigin = '';
+            // 進行中の非同期走査があれば、完了時に陳腐化した結果が反映されないよう世代カウンタを進めて無効化する
+            if (this.caption_pivot_scan_in_flight === true) {
+                this.caption_pivot_scan_generation++;
             }
+            this.applyCaptionPivot(null);
             this.caption_pivot_last_text = null;
             return;
         }
 
-        // スロットリング: 前回の計算から 150ms 未満なら再計算しない (rAF ごとの getImageData コストを抑える)
+        // スロットリング: 前回の計算から 150ms 未満なら再計算しない (rAF ごとの走査コストを抑える)
         const now = performance.now();
         if (now - this.caption_pivot_last_compute_time < 150) return;
         this.caption_pivot_last_compute_time = now;
+
+        // in-flight ガード: 前回の非同期走査が完了するまでは新規の走査を発行しない
+        // ここで caption_pivot_last_text を更新せずに戻ることで、走査中にテキストが変化していた場合も完了後の tick で再検出される
+        if (this.caption_pivot_scan_in_flight === true) return;
 
         // テキスト内容が前回から変化していなければピボットも変わらないため再計算しない (静止字幕表示中のコストを実質ゼロにする)
         const caption_text = typeof aribb24_caption.getTextContent === 'function'
@@ -1162,23 +1187,148 @@ class PlayerController {
             ? (aribb24_caption.getRawCanvas() ?? null)
             : null;
         const scan_canvas = raw_canvas ?? view_canvas;
-        const pivot = this.computeCaptionPivotCenter(scan_canvas);
-        // 非透明画素が見つからなかった場合は既定 (bottom center) に戻す
+        // 映像解像度が未確定 (0×0) のときは走査できないため、既定のピボットに戻して終える
+        if (scan_canvas.width === 0 || scan_canvas.height === 0) {
+            this.applyCaptionPivot(null);
+            return;
+        }
+        // 縮小読み戻しによる走査とピボット反映を非同期で実行する (完了を待たず、次フレームをブロックしない)
+        void this.scanCaptionPivotAsync(scan_canvas);
+    }
+
+
+    /**
+     * 字幕 Canvas の実描画範囲の中心を非同期に求め、字幕 Canvas の transform-origin に反映する
+     * 映像解像度の Canvas 全面を同期 getImageData() すると GPU からの同期読み戻しと GPU パイプラインの停止を招き、
+     * Fire TV の Silk のような非力な環境では字幕が出るたびに画面全体が一瞬フリーズしてしまう
+     * そこで GPU 側で縮小した ImageBitmap を経由して極小画像だけを読み戻すことで、メインスレッドのストールを避ける
+     * 完了までに追跡停止・字幕非表示化・破棄が起きた場合は、世代カウンタの不一致により結果を破棄する
+     * @param scan_canvas 走査対象の Canvas (字幕が描画済みのもの)
+     */
+    private async scanCaptionPivotAsync(scan_canvas: HTMLCanvasElement): Promise<void> {
+        // この走査の世代を採番する (完了時に世代が進んでいたら、結果は陳腐化しているので反映しない)
+        const generation = ++this.caption_pivot_scan_generation;
+        this.caption_pivot_scan_in_flight = true;
+        let pivot: {x: number; y: number} | null = null;
+        try {
+            pivot = await this.computeCaptionPivotCenterDownscaled(scan_canvas);
+        } catch {
+            // createImageBitmap 非対応・失敗時のフォールバック: 従来通り Canvas 全面を同期走査する
+            // (対応ブラウザでは基本発生しない。発生した場合の挙動・コストは従来実装と同一)
+            pivot = this.computeCaptionPivotCenter(scan_canvas);
+        } finally {
+            this.caption_pivot_scan_in_flight = false;
+        }
+        // 走査中に追跡停止 (stopCaptionPivotTracking) や字幕非表示化が起きていた場合は、陳腐化した結果を反映しない
+        if (generation !== this.caption_pivot_scan_generation) return;
+        // 破棄済み・破棄中は反映しない (世代カウンタでも弾かれるはずだが、念のため player の存在も確認する)
+        if (this.player === null) return;
+        // 非透明画素が見つからなかった場合 (pivot === null) は既定 (bottom center) に戻す
+        this.applyCaptionPivot(pivot);
+    }
+
+
+    /**
+     * 求めたピボット中心を字幕 Canvas (viewCanvas) の transform-origin に inline で反映する
+     * inline スタイルは App.vue の CSS ルールより優先されるため、scale はそのままピボットだけが上書きされる
+     * null を渡した場合は inline スタイルを解除し、App.vue の CSS ルール (transform-origin: bottom center) に戻す
+     * @param pivot 非透明画素範囲の中心比率 {x, y}。既定のピボットに戻す場合は null
+     */
+    private applyCaptionPivot(pivot: {x: number; y: number} | null): void {
+        // 非同期走査の完了時に古い参照を使わないよう、反映時点の viewCanvas を都度取得する
+        const view_canvas = this.getCaptionViewCanvas();
+        if (view_canvas === null) return;
         if (pivot === null) {
+            // 既に inline スタイルが解除済みの場合は何もしない (無駄なスタイル再計算を避ける)
             if (view_canvas.style.transformOrigin !== '') {
                 view_canvas.style.transformOrigin = '';
             }
             return;
         }
-        // 求めた中心 (0..1) を % に変換し、viewCanvas に inline で transform-origin を反映する
-        // inline スタイルは App.vue の CSS ルールより優先されるため、scale はそのままピボットだけが上書きされる
+        // 求めた中心 (0..1) を % に変換して反映する
         view_canvas.style.transformOrigin = `${pivot.x * 100}% ${pivot.y * 100}%`;
     }
 
 
     /**
-     * 指定した Canvas のアルファチャンネルを走査し、非透明画素の範囲 (バウンディングボックス) の中心を 0..1 の比率で求める
-     * 計算コストを抑えるため 4px ストライドでサンプリングする (字幕は大きな塊なので粗いサンプリングでもピボットには十分)
+     * 指定した Canvas を GPU 側で縮小した ImageBitmap として非同期に取得し、非透明画素範囲の中心を 0..1 の比率で求める
+     * 縮小は createImageBitmap() がメインスレッド外で非同期に行うため、メインスレッドと GPU パイプラインをブロックしない
+     * 読み戻し (getImageData) は長辺約 240px の極小 Canvas (RGBA で約 130KB) に対してのみ行うため、コストは環境を問わず小さい
+     * 縮小により中心の分解能は粗くなるが (幅 1920px の映像で 8px 刻み)、ピボットの誤差は画面上では (scale - 1) 倍でしか
+     * 現れないため、この程度の誤差は視認できない
+     * @param scan_canvas 走査対象の Canvas (字幕が描画済みのもの)
+     * @returns 非透明画素範囲の中心比率 {x, y}。非透明画素が一つもない場合は null
+     * @throws createImageBitmap 非対応環境などでは例外を送出する (呼び出し元で同期走査にフォールバックする)
+     */
+    private async computeCaptionPivotCenterDownscaled(scan_canvas: HTMLCanvasElement): Promise<{x: number; y: number} | null> {
+        // 長辺が約 240px となる縮小サイズを求める (アスペクト比は維持し、元のサイズより拡大はしない)
+        const MAX_DIMENSION = 240;
+        const resize_ratio = Math.min(1, MAX_DIMENSION / Math.max(scan_canvas.width, scan_canvas.height));
+        const scan_width = Math.max(1, Math.round(scan_canvas.width * resize_ratio));
+        const scan_height = Math.max(1, Math.round(scan_canvas.height * resize_ratio));
+        // GPU 側で非同期に縮小コピーを生成する (resizeQuality: 'low' で高速な縮小アルゴリズムを指定)
+        const bitmap = await createImageBitmap(scan_canvas, {
+            resizeWidth: scan_width,
+            resizeHeight: scan_height,
+            resizeQuality: 'low',
+        });
+        try {
+            // 使い回しの極小 Canvas に転写する
+            // 描画先サイズを明示的に指定しているため、万一 resize オプションが無視される環境でもここで確実に縮小される
+            const context = this.getCaptionPivotScanContext(scan_width, scan_height);
+            if (context === null) {
+                throw new Error('Failed to get the 2D context for caption pivot scanning.');
+            }
+            context.drawImage(bitmap, 0, 0, scan_width, scan_height);
+            // willReadFrequently: true の極小 Canvas からの読み戻しなので、映像解像度の全面読み戻しのような GPU 同期は発生しない
+            const image_data = context.getImageData(0, 0, scan_width, scan_height);
+            // 縮小済みでデータ量が小さいため、ストライドなしの全画素走査で精度を確保する
+            return this.computeAlphaBoundingBoxCenter(image_data.data, scan_width, scan_height, 1);
+        } finally {
+            // どの経路でも ImageBitmap を確実に解放する (close し忘れると GPU メモリをリークする)
+            bitmap.close();
+        }
+    }
+
+
+    /**
+     * 縮小読み戻し用の使い回しオフスクリーン Canvas を指定サイズで用意し、その 2D コンテキストを返す
+     * Canvas とコンテキストは初回呼び出し時に遅延生成し、以降は使い回す (走査のたびに生成する GC 負荷を避ける)
+     * @param width 縮小読み戻しに使う幅 (px)
+     * @param height 縮小読み戻しに使う高さ (px)
+     * @returns 使い回しの 2D コンテキスト。取得できない場合は null
+     */
+    private getCaptionPivotScanContext(width: number, height: number): OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null {
+        // 初回のみ Canvas とコンテキストを生成する
+        if (this.caption_pivot_scan_canvas === null || this.caption_pivot_scan_context === null) {
+            // OffscreenCanvas が使えるなら使う (OffscreenCanvas の方がパフォーマンスが良い)
+            const canvas = ('OffscreenCanvas' in window) ?
+                new OffscreenCanvas(width, height) : document.createElement('canvas');
+            // willReadFrequently: true で読み戻し前提の CPU バックの Canvas としてブラウザにヒントを与える
+            // (アルファチャンネルを走査するため alpha: false は指定しない)
+            const context = canvas.getContext('2d', {
+                willReadFrequently: true,
+            }) as OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null;
+            if (context === null) return null;
+            this.caption_pivot_scan_canvas = canvas;
+            this.caption_pivot_scan_context = context;
+        }
+        // 映像解像度の変化などでサイズが変わったときのみ Canvas をリサイズする
+        if (this.caption_pivot_scan_canvas.width !== width || this.caption_pivot_scan_canvas.height !== height) {
+            this.caption_pivot_scan_canvas.width = width;
+            this.caption_pivot_scan_canvas.height = height;
+        }
+        // 前回の走査内容が残らないよう毎回クリアする
+        this.caption_pivot_scan_context.clearRect(0, 0, width, height);
+        return this.caption_pivot_scan_context;
+    }
+
+
+    /**
+     * 指定した Canvas 全面のアルファチャンネルを同期走査し、非透明画素の範囲 (バウンディングボックス) の中心を 0..1 の比率で求める
+     * 映像解像度の Canvas 全面の getImageData() は GPU からの同期読み戻しを伴い、非力な環境では画面全体が一瞬固まるため、
+     * 通常経路では computeCaptionPivotCenterDownscaled() を使い、このメソッドは createImageBitmap が使えない環境向けの
+     * 同期フォールバックとしてのみ用いる
      * @param canvas 走査対象の Canvas (字幕が描画済みのもの)
      * @returns 非透明画素範囲の中心比率 {x, y}。非透明画素が一つもない場合は null
      */
@@ -1186,21 +1336,34 @@ class PlayerController {
         const width = canvas.width;
         const height = canvas.height;
         if (width === 0 || height === 0) return null;
-        // willReadFrequently は DPlayer 側で生成された Canvas のため指定できないが、走査頻度は 150ms 間隔に絞っているため許容する
+        // willReadFrequently は DPlayer 側で生成された Canvas のため指定できないが、フォールバック時のみ実行されるため許容する
         const context = canvas.getContext('2d');
         if (context === null) return null;
 
-        // 字幕の全画素を取得し、アルファ値が閾値を超える画素の min/max 座標を求める
+        // 字幕の全画素を取得し、非透明画素のバウンディングボックス中心を求める
+        // 全面走査でデータ量が大きいため、4px ストライドのサンプリングでループ回数を抑える (字幕は大きな塊なので十分)
         const image_data = context.getImageData(0, 0, width, height).data;
-        const STRIDE = 4;  // サンプリング間隔 (px)
+        return this.computeAlphaBoundingBoxCenter(image_data, width, height, 4);
+    }
+
+
+    /**
+     * RGBA 画素データのアルファチャンネルを走査し、非透明画素の範囲 (バウンディングボックス) の中心を 0..1 の比率で求める
+     * @param data RGBA 順に並んだ画素データ (getImageData() の data)
+     * @param width 画素データの幅 (px)
+     * @param height 画素データの高さ (px)
+     * @param stride サンプリング間隔 (px)。1 なら全画素、4 なら縦横 4px おきにサンプリングして走査する
+     * @returns 非透明画素範囲の中心比率 {x, y}。非透明画素が一つもない場合は null
+     */
+    private computeAlphaBoundingBoxCenter(data: Uint8ClampedArray, width: number, height: number, stride: number): {x: number; y: number} | null {
         const ALPHA_THRESHOLD = 8;  // アンチエイリアスの薄い画素を無視するためのアルファ閾値
         let min_x = width, min_y = height, max_x = -1, max_y = -1;
-        for (let y = 0; y < height; y += STRIDE) {
+        for (let y = 0; y < height; y += stride) {
             // 行頭の画素インデックス (RGBA 4 バイト × 幅)
             const row_offset = y * width * 4;
-            for (let x = 0; x < width; x += STRIDE) {
+            for (let x = 0; x < width; x += stride) {
                 // 当該画素のアルファ値 (RGBA の 4 バイト目)
-                const alpha = image_data[row_offset + x * 4 + 3];
+                const alpha = data[row_offset + x * 4 + 3];
                 if (alpha > ALPHA_THRESHOLD) {
                     if (x < min_x) min_x = x;
                     if (x > max_x) max_x = x;
@@ -2374,6 +2537,9 @@ class PlayerController {
         // 字幕の拡大ピボット追跡 (requestAnimationFrame ループ) を停止する
         // チャンネル切替などで PlayerController を再初期化したときに rAF ループが累積しないようにする
         this.stopCaptionPivotTracking();
+        // 縮小読み戻し用の使い回し Canvas を解放する (stopCaptionPivotTracking() では倍率の再変更に備えて保持している)
+        this.caption_pivot_scan_canvas = null;
+        this.caption_pivot_scan_context = null;
 
         // DPlayer 本体を破棄
         // なぜか例外が出ることがあるので try-catch で囲む
