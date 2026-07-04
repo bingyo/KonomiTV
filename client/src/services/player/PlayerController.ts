@@ -7,6 +7,7 @@ import mpegts from 'mpegts.js';
 import { watch } from 'vue';
 
 import APIClient from '@/services/APIClient';
+import { CAPTION_GAIJI_GLYPHS_PUA, CAPTION_GAIJI_GLYPHS_UNICODE } from '@/services/player/CaptionGaijiGlyphs';
 import CustomBufferController from '@/services/player/CustomBufferController';
 import CaptureManager from '@/services/player/managers/CaptureManager';
 import DocumentPiPManager from '@/services/player/managers/DocumentPiPManager';
@@ -47,6 +48,11 @@ class PlayerController {
 
     // 視聴履歴の更新間隔 (秒)
     private static readonly WATCHED_HISTORY_UPDATE_INTERVAL = 10;
+
+    // 字幕外字グリフのウォームアップを実施済みのフォントスタック (+ usePUA) のキー
+    // フォントフォールバック解決・グリフラスタライズのキャッシュはページ (レンダラープロセス) 単位で共有されるため、
+    // チャンネル切替などで PlayerController が再生成されても、同じ組み合わせに対しては再実行しない
+    private static readonly caption_gaiji_warmup_done_keys = new Set<string>();
 
     // DPlayer のインスタンス
     private player: DPlayer | null = null;
@@ -334,6 +340,33 @@ class PlayerController {
         // こうしないと DPlayer が mpegts.js / hls.js を認識できない
         (window as any).mpegts = mpegts;
         (window as any).Hls = Hls;
+
+        // 字幕描画に用いるフォントスタックと、外字を Unicode 領域の代わりに私用面 (PUA) で描画するかを先に確定させる
+        // 下の aribb24.js へのオプション指定と、プレイヤー初期化後の外字グリフウォームアップの両方から同じ値を参照する
+        const caption_normal_font = (() => {
+            let font = settings_store.settings.caption_font;
+            if (font === 'sans-serif') {
+                return 'sans-serif';
+            }
+            if (font === 'Yu Gothic') {
+                // 游ゴシックのみ、Windows と Mac で名前が異なる
+                font = 'Yu Gothic Medium","Yu Gothic","YuGothic';
+            }
+            return `"${font}", "Rounded M+ 1m for ARIB", sans-serif`;
+        })();
+        const caption_use_pua = (() => {
+            const font = settings_store.settings.caption_font;
+            const context = document.createElement('canvas').getContext('2d')!;
+            context.font = '10px "Rounded M+ 1m for ARIB"';
+            context.fillText('Test', 0, 0);
+            context.font = `10px "${font}"`;
+            context.fillText('Test', 0, 0);
+            if (font.startsWith('Windows TV')) {
+                return true;
+            } else {
+                return false;
+            }
+        })();
 
         // DPlayer を初期化
         this.player = new DPlayer({
@@ -690,17 +723,7 @@ class PlayerController {
                     // 文字スーパーレンダラーを無効にするかどうか
                     disableSuperimposeRenderer: is_show_superimpose === false,
                     // 描画フォント
-                    normalFont: (() => {
-                        let font = settings_store.settings.caption_font;
-                        if (font === 'sans-serif') {
-                            return 'sans-serif';
-                        }
-                        if (font === 'Yu Gothic') {
-                            // 游ゴシックのみ、Windows と Mac で名前が異なる
-                            font = 'Yu Gothic Medium","Yu Gothic","YuGothic';
-                        }
-                        return `"${font}", "Rounded M+ 1m for ARIB", sans-serif`;
-                    })(),
+                    normalFont: caption_normal_font,
                     // 縁取りする色
                     forceStrokeColor: settings_store.settings.always_border_caption_text,
                     // 背景色
@@ -719,19 +742,7 @@ class PlayerController {
                     // 縁取りに strokeText API を利用
                     useStroke: true,
                     // Unicode 領域の代わりに私用面の領域を利用 (Windows TV 系フォントのみ)
-                    usePUA: (() => {
-                        const font = settings_store.settings.caption_font;
-                        const context = document.createElement('canvas').getContext('2d')!;
-                        context.font = '10px "Rounded M+ 1m for ARIB"';
-                        context.fillText('Test', 0, 0);
-                        context.font = `10px "${font}"`;
-                        context.fillText('Test', 0, 0);
-                        if (font.startsWith('Windows TV')) {
-                            return true;
-                        } else {
-                            return false;
-                        }
-                    })(),
+                    usePUA: caption_use_pua,
                     // 文字スーパーの PRA (内蔵音再生コマンド) のコールバックを指定
                     PRACallback: async (index: number) => {
                         // 設定で文字スーパーが無効なら実行しない
@@ -761,6 +772,11 @@ class PlayerController {
                 }
             }
         });
+
+        // 字幕の外字 (ARIB 追加記号・拡張漢字) グリフをアイドル時間に事前描画し、
+        // 外字入り字幕の表示時に発生するフォントフォールバック解決・グリフラスタライズのスパイクを前倒しする
+        // 渡すフォントスタック・usePUA は、上で aribb24.js に指定したものと同一の値
+        void PlayerController.warmupCaptionGaijiGlyphs(caption_normal_font, caption_use_pua);
 
         // 字幕の文字サイズ倍率の設定値を、プレイヤーコンテナの CSS カスタムプロパティに反映する
         // ARIB B24 字幕の Canvas に対するスタイルは App.vue 側のグローバル CSS (.dplayer-video-wrap-aspect > canvas)
@@ -1379,6 +1395,73 @@ class PlayerController {
         const center_x = Math.min(Math.max(((min_x + max_x) / 2) / width, 0), 1);
         const center_y = Math.min(Math.max(((min_y + max_y) / 2) / height, 0), 1);
         return {x: center_x, y: center_y};
+    }
+
+
+    /**
+     * 字幕フォントスタックの外字 (ARIB 追加記号・拡張漢字) グリフをアイドル時間に事前描画し、
+     * 外字入り字幕の表示時に発生するフォントフォールバック解決・グリフラスタライズのコストを前倒しする
+     * 字幕フォントが端末にインストールされていない環境では、外字の描画がシステムフォントへの同期フォールバック解決に
+     * 流れ、Fire TV (Silk) のような非力な環境では外字入り字幕が表示されるたびに画面全体が一瞬フリーズする要因になっていた
+     * そこで同梱の字幕フォールバック用サブセット Web フォント (Rounded M+ 1m for ARIB) を明示的にロードして
+     * 外字の解決をフォントスタック内で完結させた上で、全外字グリフを一巡描画してブラウザのフォントキャッシュを温める
+     * インスタンス状態には依存しないため、チャンネル切替などでの PlayerController の破棄・再生成とは連動しない
+     * @param normal_font aribb24.js の normalFont に指定したものと同じフォントスタック
+     * @param use_pua aribb24.js の usePUA に指定したものと同じ、外字を私用面 (PUA) で描画するかどうか
+     */
+    private static async warmupCaptionGaijiGlyphs(normal_font: string, use_pua: boolean): Promise<void> {
+
+        // 同じフォントスタック・マッピングの組み合わせに対するウォームアップは、セッション中 1 回だけ実行する
+        // 完了時ではなく開始時点でキーを登録することで、実行中の再入 (チャンネル切替による再初期化など) も防ぐ
+        const warmup_key = `${normal_font}|${use_pua}`;
+        if (PlayerController.caption_gaiji_warmup_done_keys.has(warmup_key)) return;
+        PlayerController.caption_gaiji_warmup_done_keys.add(warmup_key);
+
+        // 同梱しているサブセット Web フォントのロードを明示的に開始し、完了を待つ
+        // Canvas の fillText はロードが完了していない Web フォントを黙ってスキップしてフォールバック描画してしまうため、
+        // 先にロードを済ませておかないと、以降のウォームアップも実際の字幕描画も Web フォントに当たらない
+        try {
+            await document.fonts.load('10px "Rounded M+ 1m for ARIB"', '🈑\u{fe0e}');
+        } catch {
+            // ロードに失敗した場合 (フォントファイルの取得失敗など) も、
+            // 従来通りシステムフォントフォールバックで描画自体は可能なため、ウォームアップは続行する
+        }
+
+        // requestIdleCallback が使えない環境 (Safari など) では setTimeout で代用する
+        const wait_for_idle = () => new Promise<void>((resolve) => {
+            if ('requestIdleCallback' in window) {
+                // 再生開始直後などでアイドル時間がなかなか取れない場合でも、1 秒以内には必ず実行されるようにする
+                requestIdleCallback(() => resolve(), { timeout: 1000 });
+            } else {
+                setTimeout(resolve, 50);
+            }
+        });
+
+        // 実際の字幕描画 (aribb24.js の renderFont()) と同じフォント指定・API (strokeText + fillText) で外字を描画する
+        // 描画先はどこにも表示しない使い捨ての Canvas で良い (フォントフォールバック解決とグリフラスタライズの
+        // キャッシュはページ単位で共有されるため、描画先がどの Canvas かは問われない)
+        const canvas = document.createElement('canvas');
+        canvas.width = 100;
+        canvas.height = 100;
+        const context = canvas.getContext('2d');
+        if (context === null) return;
+        context.font = `48px ${normal_font}`;
+        context.textBaseline = 'middle';
+        context.textAlign = 'center';
+        context.lineWidth = 4;
+
+        // usePUA 設定に応じて、実際の字幕描画で使われる方のマッピングの文字一覧をウォームアップする
+        const glyphs = use_pua ? CAPTION_GAIJI_GLYPHS_PUA : CAPTION_GAIJI_GLYPHS_UNICODE;
+        const CHUNK_SIZE = 32;  // 1 チャンクあたりの描画文字数 (メインスレッドを数 ms 以上占有しない程度の粒度)
+        for (let index = 0; index < glyphs.length; index += CHUNK_SIZE) {
+            // メインスレッドを占有し続けないよう、チャンクごとにアイドルコールバックを待ってから描画する
+            await wait_for_idle();
+            for (const glyph of glyphs.slice(index, index + CHUNK_SIZE)) {
+                // 縁取り (strokeText) と本体 (fillText) の両方を、実際の字幕描画と同じように温める
+                context.strokeText(glyph, 50, 50);
+                context.fillText(glyph, 50, 50);
+            }
+        }
     }
 
 

@@ -58,6 +58,14 @@
                 font-display: swap;
                 src: url('/assets/fonts/Twemoji.woff2') format('woff2');
             }
+            /* ARIB 字幕の外字 (追加記号・拡張漢字) グリフのみを収録したサブセット版
+               フルセット版がローカルにインストールされている場合はそちらを優先する */
+            @font-face {
+                font-family: 'Rounded M+ 1m for ARIB';
+                font-weight: normal;
+                font-display: swap;
+                src: local('Rounded M+ 1m for ARIB'), url('/assets/fonts/RoundedMPlus1mForARIB-Subset.woff2') format('woff2');
+            }
             @font-face {
                 font-family: 'Material Design Icons';
                 font-weight: normal;
