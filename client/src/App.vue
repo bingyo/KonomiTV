@@ -290,6 +290,8 @@ body .route-container {
 // CSS のみでスタイルを完結させることで、Canvas 動的挿入時の MutationObserver や resize リスナーを不要にしている
 // なお transform-origin の bottom center はあくまで既定値で、文字サイズ倍率が 1.0 以外のときは PlayerController が
 // 字幕の実描画中心を字幕 Canvas の transform-origin に inline で動的上書きする (拡大時の位置ズレ補正のため)
+// また、新しい字幕のピボットが確定するまでの間は、補正前の位置で字幕が一瞬表示されるのを防ぐため、
+// PlayerController が inline の visibility で字幕 Canvas を一時的に不可視化することがある
 .dplayer-video-wrap-aspect > canvas {
     transform: scale(var(--caption-text-scale, 1));
     transform-origin: bottom center;

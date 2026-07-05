@@ -104,9 +104,13 @@ class PlayerController {
     // 文字サイズ倍率が 1.0 以外のときだけループを回し、字幕の実描画中心を transform-origin に動的反映する
     // null のときはループ未起動 (= 倍率 1.0 / 字幕サイズ指定オフの常用パスではゼロコスト)
     private caption_pivot_raf: number | null = null;
-    // ピボット再計算のスロットリング用の最終計算時刻 (ミリ秒) と、前回計算時の字幕テキスト内容
-    // 約 150ms 間隔かつテキスト内容が変化したときのみ Canvas を走査することで、静止字幕表示中の計算コストを実質ゼロにする
+    // 字幕テキストを取得できない縮退パス (getTextContent() が null を返す場合) 専用の、再走査スロットリング用の最終走査時刻 (ミリ秒)
+    // この縮退パスではテキストの変化検出ができず定期的に走査し続けるしかないため、約 150ms 間隔に間引いてコストを抑える
+    // 通常経路 (テキストを取得できる場合) はテキスト変化時のみ走査するため、スロットリング自体が不要
     private caption_pivot_last_compute_time: number = 0;
+    // 最後に走査を発行した時点の字幕テキスト内容
+    // テキスト内容が変化したときのみ Canvas を走査することで、静止字幕表示中の計算コストを実質ゼロにする
+    // (変化検出自体は aribb24.js の内部フィールド参照と文字列比較だけなので、毎フレーム実行しても実質ゼロコスト)
     private caption_pivot_last_text: string | null = null;
     // 字幕ピボットの非同期走査が進行中かどうか (in-flight ガード)
     // 進行中は新規の走査を発行しない (走査中にテキストが変化した場合は、完了後の tick で変化が再検出され改めて走査される)
@@ -119,6 +123,16 @@ class PlayerController {
     // 映像解像度の Canvas 全面を GPU から同期読み戻しすること (非力な環境で画面全体が一瞬固まる要因) を避ける
     private caption_pivot_scan_canvas: OffscreenCanvas | HTMLCanvasElement | null = null;
     private caption_pivot_scan_context: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null = null;
+    // 字幕 Canvas をピボット確定待ちで不可視化した時刻 (ミリ秒)
+    // 新しい字幕の走査が完了するまでの間だけ字幕 Canvas を不可視化する際、安全弁 (連続不可視時間の上限判定) の起点として使う
+    private caption_pivot_hidden_since: number = 0;
+    // ピボット確定待ちの不可視化を行う直前の、字幕 Canvas の inline visibility の値 (表示に戻す際にこの値へ復元する)
+    // 通常は空文字だが、データ放送 (LiveDataBroadcastingManager) が映像を BML ブラウザ内へ移動した際は
+    // 全子要素に visibility: visible を強制するため、それを上書きで消してしまわないよう退避しておく必要がある
+    private caption_pivot_saved_visibility: string = '';
+    // 安全弁の発動後、走査が成功するまで字幕 Canvas の再不可視化を抑止するフラグ
+    // (テキストが変化し続ける・走査が異常に遅いなどの縮退時に、字幕が不可視のままほぼ表示されなくなるのを防ぐ)
+    private caption_pivot_hide_suppressed: boolean = false;
 
     // 破棄中かどうか
     // 破棄中は destroy() が呼ばれても何もしない
@@ -1088,8 +1102,12 @@ class PlayerController {
      * (横書きは左上・縦書きは右上) へズレてしまう。スケールのピボットが字幕の実描画位置と一致していないことが原因である。
      * そこで requestAnimationFrame で字幕の実描画範囲のバウンディングボックス中心を求め、その中心を字幕 Canvas の
      * transform-origin に動的反映することで、書字方向や位置に関係なく字幕がその場で拡大縮小されるようにする。
+     * さらに、走査完了までの間に新しい字幕が「前の字幕用のピボットのまま」一瞬表示されてから補正位置へジャンプして
+     * 見えるのを防ぐため、テキスト変化を検出した時点で字幕 Canvas を一時的に不可視化し、ピボット確定後に表示する
+     * (詳細は updateCaptionPivot() のコメントを参照)。
      * このループはコードベースの「CSS のみ・監視なし」方針からは外れるが、(1) 倍率 1.0 のときは起動しない、
-     * (2) 字幕非表示中は Canvas 走査をスキップする、(3) 表示中も約 150ms 間隔かつテキスト変化時のみ走査する、
+     * (2) 字幕非表示中は Canvas 走査をスキップする、(3) 表示中もテキスト内容が変化したときのみ走査する
+     * (変化検出は aribb24.js の内部フィールド参照と文字列比較だけなので毎フレーム実行しても実質ゼロコスト)、
      * (4) タブ非表示中は rAF が自動停止する、(5) 走査自体も GPU 縮小した極小画像の非同期読み戻しで行い、
      * 映像解像度の Canvas 全面を同期読み戻ししない (非力な環境でのフリーズ防止)、と多重にゲートしているため
      * 追加コストは十分に抑えられている。
@@ -1100,6 +1118,10 @@ class PlayerController {
         // 次回の tick で必ず再計算されるよう、スロットリング・テキストのキャッシュをリセットする
         this.caption_pivot_last_compute_time = 0;
         this.caption_pivot_last_text = null;
+        // ピボット確定待ちの不可視化まわりの状態も初期化する (前回の追跡セッションの状態を持ち越さない)
+        this.caption_pivot_hidden_since = 0;
+        this.caption_pivot_hide_suppressed = false;
+        this.caption_pivot_saved_visibility = '';
 
         // 1 フレームごとに呼ばれるループ本体
         // updateCaptionPivot() 内で表示状態・スロットリングを判定するため、ここでは単純に次フレームを予約し続ける
@@ -1112,7 +1134,7 @@ class PlayerController {
 
 
     /**
-     * 字幕の拡大ピボット追跡を停止し、字幕 Canvas に inline で当てていた transform-origin を解除して既定に戻す
+     * 字幕の拡大ピボット追跡を停止し、字幕 Canvas に inline で当てていた transform-origin と visibility を解除して既定に戻す
      * inline スタイルを空にすることで、App.vue の CSS ルール (transform-origin: bottom center) にフォールバックする
      * チャンネル切替・再初期化時のループ累積を防ぐため destroy() からも呼ばれる
      */
@@ -1127,9 +1149,12 @@ class PlayerController {
         // 強制クリアすると直後に追跡が再開された場合に走査の二重発行を許してしまう。Promise は必ず settle して自ら false に戻す)
         this.caption_pivot_scan_generation++;
         // inline で上書きしていた transform-origin を解除し、App.vue の CSS ルール (bottom center) に戻す
+        // ピボット確定待ちで不可視化したまま追跡が停止した場合 (倍率を 1.0 に戻した・destroy() された直後など) に
+        // 字幕が不可視のまま取り残されないよう、visibility の inline も必ず解除する
         const view_canvas = this.getCaptionViewCanvas();
         if (view_canvas !== null) {
             view_canvas.style.transformOrigin = '';
+            this.setCaptionCanvasVisibility(view_canvas, true);
         }
         this.caption_pivot_last_text = null;
     }
@@ -1153,8 +1178,12 @@ class PlayerController {
 
     /**
      * 字幕の実描画範囲の中心を求め、字幕 Canvas の transform-origin に inline で反映する (rAF ループから毎フレーム呼ばれる)
-     * 計算コストを抑えるため、字幕が表示されているとき、かつ約 150ms 間隔・テキスト内容変化時のみ Canvas を走査する
+     * 計算コストを抑えるため、字幕が表示されているとき、かつテキスト内容が変化したときのみ Canvas を走査する
      * 走査自体も GPU 縮小した極小画像の非同期読み戻し (scanCaptionPivotAsync) で行い、メインスレッドをブロックしない
+     * さらにテキスト変化の検出と同時に字幕 Canvas を一時的に不可視化し、走査完了後のピボット反映と同時に表示することで、
+     * 「前の字幕用のピボットのまま新しい字幕が一瞬表示され、その後補正位置へジャンプする」フラッシュを防ぐ
+     * aribb24.js の字幕描画は TextTrack の cuechange イベント (マクロタスク) 内で行われ、rAF コールバックは描画結果が
+     * 実際に画面へ出る paint よりも前に走るため、この tick 内で不可視化すれば補正前の描画は一度も画面に出ない
      */
     private updateCaptionPivot(): void {
         if (this.player === null) return;
@@ -1176,25 +1205,51 @@ class PlayerController {
                 this.caption_pivot_scan_generation++;
             }
             this.applyCaptionPivot(null);
+            // ピボット確定待ちの不可視化が残っていれば解除する (Canvas は空なので何も表示されない)
+            // 字幕の切れ目は状態のリセットポイントでもあるため、安全弁による不可視化の抑止もここで解除する
+            this.setCaptionCanvasVisibility(view_canvas, true);
+            this.caption_pivot_hide_suppressed = false;
             this.caption_pivot_last_text = null;
             return;
         }
 
-        // スロットリング: 前回の計算から 150ms 未満なら再計算しない (rAF ごとの走査コストを抑える)
         const now = performance.now();
-        if (now - this.caption_pivot_last_compute_time < 150) return;
-        this.caption_pivot_last_compute_time = now;
 
-        // in-flight ガード: 前回の非同期走査が完了するまでは新規の走査を発行しない
-        // ここで caption_pivot_last_text を更新せずに戻ることで、走査中にテキストが変化していた場合も完了後の tick で再検出される
-        if (this.caption_pivot_scan_in_flight === true) return;
+        // 安全弁: 不可視化から 500ms 経ってもピボットを確定できていない場合は、諦めて字幕を表示する
+        // (走査が異常に遅い・テキストが変化し続けて走査が完了しないなどの縮退時に、字幕がほぼ表示されなくなるのを防ぐ)
+        // 通常は「テキスト変化の検出 → 走査完了」まで数フレームで完了するため、500ms は正常動作では到達しないマージン
+        // 発動後は走査が成功するまで再不可視化を抑止し、従来同様「表示したまま補正が後追いする」挙動に退避する
+        if (view_canvas.style.visibility === 'hidden' && now - this.caption_pivot_hidden_since > 500) {
+            this.setCaptionCanvasVisibility(view_canvas, true);
+            this.caption_pivot_hide_suppressed = true;
+        }
 
-        // テキスト内容が前回から変化していなければピボットも変わらないため再計算しない (静止字幕表示中のコストを実質ゼロにする)
+        // テキスト内容が前回の走査発行時から変化していなければ、ピボットも変わらないため再計算しない
+        // (静止字幕表示中のコストを実質ゼロにする。getTextContent() は内部フィールドの参照だけなので毎フレーム呼んでも実質ゼロコスト)
         const caption_text = typeof aribb24_caption.getTextContent === 'function'
             ? (aribb24_caption.getTextContent() as string | null)
             : null;
         if (caption_text !== null && caption_text === this.caption_pivot_last_text) return;
-        this.caption_pivot_last_text = caption_text;
+
+        if (caption_text === null) {
+            // テキストを取得できない縮退パス: 変化検出ができないため、不可視化は行わず定期的な再走査だけで補正を後追いさせる
+            // スロットリング: 前回の走査発行から 150ms 未満なら再走査しない (rAF ごとの走査コストを抑える)
+            if (now - this.caption_pivot_last_compute_time < 150) return;
+            this.caption_pivot_last_compute_time = now;
+            // in-flight ガード: 前回の非同期走査が完了するまでは新規の走査を発行しない
+            if (this.caption_pivot_scan_in_flight === true) return;
+        } else {
+            // テキスト変化を検出: 補正前のピボットのまま新しい字幕が paint されるより先に (rAF は paint 前に走る)、
+            // 字幕 Canvas を不可視化する (走査完了後のピボット反映と同時に再表示される)
+            // 安全弁の発動後は、走査が成功するまで不可視化を抑止する
+            if (this.caption_pivot_hide_suppressed === false) {
+                this.setCaptionCanvasVisibility(view_canvas, false);
+            }
+            // in-flight ガード: 前回の非同期走査が完了するまでは新規の走査を発行しない
+            // ここで caption_pivot_last_text を更新せずに戻ることで、この変化が完了後の tick で再検出され改めて走査される
+            if (this.caption_pivot_scan_in_flight === true) return;
+            this.caption_pivot_last_text = caption_text;
+        }
 
         // 字幕の実描画範囲のバウンディングボックス中心を求める
         // 画面表示用 viewCanvas は DPR 倍の解像度になりうるため、まず映像解像度の rawCanvas を優先して走査する
@@ -1204,12 +1259,14 @@ class PlayerController {
             : null;
         const scan_canvas = raw_canvas ?? view_canvas;
         // 映像解像度が未確定 (0×0) のときは走査できないため、既定のピボットに戻して終える
+        // 不可視のまま取り残さないよう、表示状態にも戻す
         if (scan_canvas.width === 0 || scan_canvas.height === 0) {
             this.applyCaptionPivot(null);
+            this.setCaptionCanvasVisibility(view_canvas, true);
             return;
         }
         // 縮小読み戻しによる走査とピボット反映を非同期で実行する (完了を待たず、次フレームをブロックしない)
-        void this.scanCaptionPivotAsync(scan_canvas);
+        void this.scanCaptionPivotAsync(scan_canvas, caption_text);
     }
 
 
@@ -1219,9 +1276,12 @@ class PlayerController {
      * Fire TV の Silk のような非力な環境では字幕が出るたびに画面全体が一瞬フリーズしてしまう
      * そこで GPU 側で縮小した ImageBitmap を経由して極小画像だけを読み戻すことで、メインスレッドのストールを避ける
      * 完了までに追跡停止・字幕非表示化・破棄が起きた場合は、世代カウンタの不一致により結果を破棄する
+     * 完了までに字幕テキストがさらに変化していた場合も、古い字幕に対する結果なので破棄する
+     * (この場合は不可視のままにしておけば、次の tick が変化を再検出して改めて走査・反映する)
      * @param scan_canvas 走査対象の Canvas (字幕が描画済みのもの)
+     * @param scanned_text 走査発行時点の字幕テキスト (完了時にテキストが変化していないかの検証に使う。取得できない場合は null)
      */
-    private async scanCaptionPivotAsync(scan_canvas: HTMLCanvasElement): Promise<void> {
+    private async scanCaptionPivotAsync(scan_canvas: HTMLCanvasElement, scanned_text: string | null): Promise<void> {
         // この走査の世代を採番する (完了時に世代が進んでいたら、結果は陳腐化しているので反映しない)
         const generation = ++this.caption_pivot_scan_generation;
         this.caption_pivot_scan_in_flight = true;
@@ -1239,8 +1299,22 @@ class PlayerController {
         if (generation !== this.caption_pivot_scan_generation) return;
         // 破棄済み・破棄中は反映しない (世代カウンタでも弾かれるはずだが、念のため player の存在も確認する)
         if (this.player === null) return;
+        // 走査中に字幕テキストがさらに変化していた場合、この結果は古い字幕に対するものなので反映しない
+        // (不可視化したままにしておけば、次の tick がテキスト変化を再検出して改めて走査・反映する)
+        const aribb24_caption = this.player.plugins.aribb24Caption as any;
+        const current_text = (aribb24_caption != null && typeof aribb24_caption.getTextContent === 'function')
+            ? (aribb24_caption.getTextContent() as string | null)
+            : null;
+        if (current_text !== scanned_text) return;
         // 非透明画素が見つからなかった場合 (pivot === null) は既定 (bottom center) に戻す
         this.applyCaptionPivot(pivot);
+        // ピボットが確定したので、確定待ちで不可視化していた字幕 Canvas を表示する
+        // 走査が成功した = 正常に補正が追従できているので、安全弁による不可視化の抑止もここで解除する
+        const view_canvas = this.getCaptionViewCanvas();
+        if (view_canvas !== null) {
+            this.setCaptionCanvasVisibility(view_canvas, true);
+        }
+        this.caption_pivot_hide_suppressed = false;
     }
 
 
@@ -1263,6 +1337,37 @@ class PlayerController {
         }
         // 求めた中心 (0..1) を % に変換して反映する
         view_canvas.style.transformOrigin = `${pivot.x * 100}% ${pivot.y * 100}%`;
+    }
+
+
+    /**
+     * 字幕 Canvas (viewCanvas) の表示/不可視を inline の visibility で切り替える
+     * 新しい字幕のピボットが確定するまでの間だけ不可視化し、補正前の位置で字幕が一瞬表示されるのを防ぐために使う
+     * 不可視化の状態はフラグでは持たず style.visibility を直接読み書きする
+     * (aribb24.js 側で Canvas が作り直された場合も、新しい Canvas は可視状態から始まるため状態のズレが起きない)
+     * なお inline の visibility は当メソッドの専有ではなく、データ放送 (LiveDataBroadcastingManager) が映像を
+     * BML ブラウザ内へ移動する際に全子要素へ visibility: visible を強制する
+     * そのため「不可視化時に元の値を退避し、表示時は不可視化した張本人である場合のみ退避値へ復元する」方式にして、
+     * 外部が書いた値を上書きで消してしまわないようにしている
+     * @param view_canvas 対象の字幕 Canvas
+     * @param visible true なら表示 (不可視化前の値に復元する)、false なら不可視化
+     */
+    private setCaptionCanvasVisibility(view_canvas: HTMLCanvasElement, visible: boolean): void {
+        if (visible === true) {
+            // 自分が不可視化した状態のときのみ、退避しておいた値へ復元する
+            // (既に可視の場合のほか、外部により visible が強制されている場合も何もしない)
+            if (view_canvas.style.visibility === 'hidden') {
+                view_canvas.style.visibility = this.caption_pivot_saved_visibility;
+            }
+        } else {
+            // 可視 → 不可視の遷移時のみ、復元用に現在の値を退避し、安全弁 (連続不可視時間の上限判定) の起点時刻を記録する
+            // 既に不可視の場合は起点を保つことで、連続する字幕変化で走査をやり直す場合も「連続して不可視な時間」を正しく測れる
+            if (view_canvas.style.visibility !== 'hidden') {
+                this.caption_pivot_saved_visibility = view_canvas.style.visibility;
+                view_canvas.style.visibility = 'hidden';
+                this.caption_pivot_hidden_since = performance.now();
+            }
+        }
     }
 
 
