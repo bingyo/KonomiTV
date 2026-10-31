@@ -7,7 +7,7 @@ import { comlink } from 'vite-plugin-comlink';
 import { VitePWA } from 'vite-plugin-pwa';
 import vuetify, { transformAssetUrls } from 'vite-plugin-vuetify';
 
-import { dplayerCaptionDRCSPatch } from './vite-plugins/DPlayerCaptionDRCSPatch.mts';
+import { dplayerBundlePatch } from './vite-plugins/DPlayerBundlePatch.mts';
 
 
 // Vite の設定
@@ -63,8 +63,8 @@ export default defineConfig({
     },
     // プラグインの設定
     plugins: [
-        // DPlayer に内包された aribb24.js の DRCS 描画ループを高速版に差し替える
-        dplayerCaptionDRCSPatch(),
+        // DPlayer のバンドルを書き換える (字幕の DRCS 描画の高速化と、Safari で再生時刻が NaN になる問題の修正)
+        dplayerBundlePatch(),
         comlink(),
         vue({
             template: {

@@ -13,7 +13,7 @@
  * 発行回数を字形にもよるが 1/50 〜 1/300 程度に削減し、負荷を通常の文字と同程度に抑える
  *
  * aribb24.js は DPlayer のバンドルに内包されていて外から差し替えられないため、Vite プラグイン
- * (vite-plugins/DPlayerCaptionDRCSPatch.mts) でバンドル内の DRCS 描画ループをこのレンダラーの呼び出しに書き換えている
+ * (vite-plugins/DPlayerBundlePatch.mts) でバンドル内の DRCS 描画ループをこのレンダラーの呼び出しに書き換えている
  */
 
 // 縁取りの太さ (ドット単位)

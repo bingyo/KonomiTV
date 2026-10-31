@@ -357,7 +357,7 @@ class PlayerController {
         (window as any).Hls = Hls;
 
         // 字幕の DRCS (ビットマップ外字) の高速レンダラーを window 直下に入れる
-        // DPlayer のバンドルに内包された aribb24.js からは、vite-plugins/DPlayerCaptionDRCSPatch.mts で書き換えた
+        // DPlayer のバンドルに内包された aribb24.js からは、vite-plugins/DPlayerBundlePatch.mts で書き換えた
         // DRCS の描画処理を介してここを参照する
         (window as any).KonomiTVCaptionDRCSRenderer = renderCaptionDRCSGlyph;
 

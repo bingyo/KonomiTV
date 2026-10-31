@@ -25,23 +25,36 @@ const DRCS_RENDERER_CALL = [
     'e.getRGBAfromColorCode(this.fg_color))}else{',
 ].join('');
 
+// DPlayer.sync() にある、ライブ視聴の再生位置を同期する処理の minify 済みコード (t: 同期先の再生位置)
+const LIVE_SYNC_SEEK = 'try{this.video.currentTime=t}catch(e){return}';
+
+// 同期先の再生位置が有限の値でなければ何もしないようにするコード
+// sync() は再生開始時にも呼ばれ、メタデータの取得前は video.duration が NaN なので t も NaN になる
+// Chrome などでは currentTime への NaN の代入は TypeError となり、上の catch で何も起きずに終わる
+// 一方 WebKit の currentTime は unrestricted double で例外にならず、readyState が HAVE_NOTHING の間に代入すると内部の再生開始位置に
+// 無効値が残り、以後シークしても video.currentTime は NaN を返し続ける (Safari 26.6 / WebKit 27.2 相当で確認)
+// その結果、Safari のライブ視聴では字幕の Cue が一度も発火せず、バッファの先頭が 0 秒から離れていると再生自体も始まらない
+const LIVE_SYNC_GUARD = 'if(!isFinite(t))return;';
+
 
 /**
- * DPlayer のバンドル内の DRCS 描画ループを、CaptionDRCSRenderer の呼び出しに書き換える
- * 元の描画ループは DRCS 1 文字あたり数万回の fillRect() を発行し、Fire TV (Silk) のような非力な環境では
- * 字幕の表示時に映像全体が一瞬止まる要因となる (詳細は src/services/player/CaptionDRCSRenderer.ts を参照)
- * 元の描画ループは、レンダラーが window に登録されていない場合のフォールバックとして残している
+ * DPlayer のバンドルのソースコードを書き換える
+ * - DRCS 描画ループを、CaptionDRCSRenderer の呼び出しに書き換える
+ *   元の描画ループは DRCS 1 文字あたり数万回の fillRect() を発行し、Fire TV (Silk) のような非力な環境では
+ *   字幕の表示時に映像全体が一瞬止まる要因となる (詳細は src/services/player/CaptionDRCSRenderer.ts を参照)
+ *   元の描画ループは、レンダラーが window に登録されていない場合のフォールバックとして残している
+ * - DPlayer.sync() が video.currentTime に NaN を代入しないようにする (詳細は LIVE_SYNC_GUARD のコメントを参照)
  * @param code DPlayer のバンドルのソースコード
  * @returns 書き換え後のソースコード
  * @throws 書き換え位置がちょうど 1 箇所ずつ見つからなかった場合
  */
 export function patchDPlayerBundle(code: string): string {
     // DPlayer の更新でコードが変わった場合に、気付かないままパッチが効かなくなるのを防ぐためビルドを失敗させる
-    for (const anchor of [DRCS_LOOP_PRECEDING_CODE + DRCS_LOOP_START, DRCS_LOOP_END]) {
+    for (const anchor of [DRCS_LOOP_PRECEDING_CODE + DRCS_LOOP_START, DRCS_LOOP_END, LIVE_SYNC_SEEK]) {
         if (code.split(anchor).length !== 2) {
             throw new Error(
-                '[DPlayerCaptionDRCSPatch] Failed to patch the DRCS rendering loop in DPlayer.min.js. ' +
-                'If DPlayer or aribb24.js was updated, update the anchors in vite-plugins/DPlayerCaptionDRCSPatch.mts.',
+                '[DPlayerBundlePatch] Failed to patch DPlayer.min.js. ' +
+                'If DPlayer or aribb24.js was updated, update the anchors in vite-plugins/DPlayerBundlePatch.mts.',
             );
         }
     }
@@ -50,19 +63,21 @@ export function patchDPlayerBundle(code: string): string {
         // 描画ループの直前にレンダラーの呼び出しと else ブロックの開始を挿入する
         .replace(DRCS_LOOP_PRECEDING_CODE + DRCS_LOOP_START, () => DRCS_LOOP_PRECEDING_CODE + DRCS_RENDERER_CALL + DRCS_LOOP_START)
         // 描画ループの直後に else ブロックを閉じる } を挿入する
-        .replace(DRCS_LOOP_END, () => DRCS_LOOP_END.replace('}}', '}}}'));
+        .replace(DRCS_LOOP_END, () => DRCS_LOOP_END.replace('}}', '}}}'))
+        // ライブ視聴の再生位置の同期処理の直前に、有限の値かどうかの判定を挿入する
+        .replace(LIVE_SYNC_SEEK, () => LIVE_SYNC_GUARD + LIVE_SYNC_SEEK);
 }
 
 
 /**
- * DPlayer のバンドルに内包された aribb24.js の DRCS 描画ループを書き換える Vite プラグイン
- * aribb24.js は DPlayer のビルド済みバンドルに内包されていて、実行時に差し替えることも import し直すこともできないため、
+ * DPlayer のビルド済みバンドルを書き換える Vite プラグイン
+ * DPlayer と、それに内包された aribb24.js は実行時に差し替えることも import し直すこともできないため、
  * バンドルの読み込み時にソースコードを書き換える
  * @returns Vite プラグイン
  */
-export function dplayerCaptionDRCSPatch(): Plugin {
+export function dplayerBundlePatch(): Plugin {
     return {
-        name: 'konomitv:dplayer-caption-drcs-patch',
+        name: 'konomitv:dplayer-bundle-patch',
         enforce: 'pre',
         // 開発サーバーでは、DPlayer は esbuild による依存関係の事前バンドルを経由して読み込まれる
         // transform フックは事前バンドルには適用されないため、esbuild プラグインとして別途登録する
@@ -72,7 +87,7 @@ export function dplayerCaptionDRCSPatch(): Plugin {
                 optimizeDeps: {
                     esbuildOptions: {
                         plugins: [{
-                            name: 'konomitv:dplayer-caption-drcs-patch',
+                            name: 'konomitv:dplayer-bundle-patch',
                             setup(build) {
                                 build.onLoad({filter: DPLAYER_BUNDLE_PATH_PATTERN}, async (args) => ({
                                     contents: patchDPlayerBundle(await readFile(args.path, 'utf8')),
