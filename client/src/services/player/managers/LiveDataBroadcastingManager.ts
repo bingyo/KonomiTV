@@ -61,6 +61,10 @@ class LiveDataBroadcastingManager implements PlayerManager {
     // 動画の要素が BML ブラウザ上に移動されているかどうか
     private is_video_element_moved_to_bml_browser: boolean = false;
 
+    // BML ブラウザの Shadow DOM に入れる、字幕 Canvas 用のスタイル要素
+    // moveVideoElementToBMLBrowser() で映像の要素の移動先の Shadow DOM に追加する
+    private readonly caption_canvas_style_element: HTMLStyleElement;
+
     // PSI/SI アーカイブデータデコーダーのインスタンス
     private live_psi_archived_data_decoder: Comlink.Remote<ILivePSIArchivedDataDecoder> | null = null;
 
@@ -74,6 +78,20 @@ class LiveDataBroadcastingManager implements PlayerManager {
         // 映像が入る DOM 要素
         // DPlayer 内の dplayer-video-wrap-aspect をそのまま使う (中に映像と字幕が含まれる)
         this.media_element = this.player.template.videoWrapAspect;
+
+        // BML ブラウザの Shadow DOM に入れる、字幕 Canvas 用のスタイル要素を作成する
+        // App.vue の `.dplayer-video-wrap-aspect > canvas` と同じ内容で、変更する際は両方を揃える必要がある
+        // グローバル CSS は Shadow DOM の内側には適用されないが、CSS カスタムプロパティ (--caption-text-scale) は
+        // Shadow DOM の内側にも継承されるため、PlayerController が設定した文字サイズ倍率をそのまま参照できる
+        this.caption_canvas_style_element = document.createElement('style');
+        this.caption_canvas_style_element.textContent = `
+            .dplayer-video-wrap-aspect > canvas {
+                transform: scale(var(--caption-text-scale, 1));
+                transform-origin: bottom center;
+                pointer-events: none;
+                will-change: transform;
+            }
+        `;
 
         // リモコンの DOM 要素
         this.remocon_element = document.querySelector('.remote-control')!;
@@ -601,6 +619,12 @@ class LiveDataBroadcastingManager implements PlayerManager {
         // データ放送内に映像の要素を入れる
         this.#bml_browser?.getVideoElement()?.appendChild(this.media_element);
 
+        // 映像の要素の移動先は BML ブラウザの Shadow DOM の内側で、App.vue のグローバル CSS が適用されなくなるため、
+        // 字幕 Canvas 用のスタイルを Shadow DOM にも入れて、字幕の文字サイズ設定がデータ放送の表示中も効くようにする
+        // Shadow DOM は closed で外から参照できないが、内側に移動した要素の getRootNode() からは取得できる
+        // appendChild() なので、同じ要素を再度追加しても増えない (BML ブラウザが再作成された場合は新しい Shadow DOM に移る)
+        this.media_element.getRootNode().appendChild(this.caption_canvas_style_element);
+
         // データ放送内での表示用にスタイルを調整
         this.media_element.style.width = '100%';
         this.media_element.style.height = '100%';
@@ -618,11 +642,13 @@ class LiveDataBroadcastingManager implements PlayerManager {
             this.media_element.style.transform = `scaleY(${magnification})`;
             this.media_element.style.transformOrigin = 'center center';
             // 上記ケースでは親要素に映像のアスペクト比を矯正する目的で
-            // scaleY() が設定されるため、Canvas 要素のみ親要素の scaleY() を打ち消す縮小方向の scaleY() を設定する
+            // scaleY() が設定されるため、Canvas 要素のみ親要素の scaleY() を打ち消すよう縦方向に縮小して中央に配置する
+            // Canvas の transform は字幕の文字サイズ倍率、transform-origin は字幕の拡大ピボット追跡が使っているため、
+            // transform ではなくレイアウトで打ち消す (拡大の中心が字幕の実描画位置からズレないようにする)
             for (const child of this.media_element.children) {
                 if (child instanceof HTMLCanvasElement) {
-                    child.style.transform = `scaleY(${1 / magnification})`;
-                    child.style.transformOrigin = 'center center';
+                    child.style.height = `${100 / magnification}%`;
+                    child.style.top = `${(100 - 100 / magnification) / 2}%`;
                 }
             }
         } else {
@@ -630,8 +656,9 @@ class LiveDataBroadcastingManager implements PlayerManager {
             this.media_element.style.transformOrigin = '';
             for (const child of this.media_element.children) {
                 if (child instanceof HTMLCanvasElement) {
-                    child.style.transform = '';
-                    child.style.transformOrigin = '';
+                    // aribb24.js が Canvas の作成時に設定する値に戻す
+                    child.style.height = '100%';
+                    child.style.top = '0';
                 }
             }
         }
@@ -673,8 +700,9 @@ class LiveDataBroadcastingManager implements PlayerManager {
                 (child as HTMLVideoElement).style.height = '';
             }
             if (child instanceof HTMLCanvasElement) {
-                child.style.transform = '';
-                child.style.transformOrigin = '';
+                // aribb24.js が Canvas の作成時に設定する値に戻す
+                child.style.height = '100%';
+                child.style.top = '0';
             }
         }
         this.media_element.style.transform = '';

@@ -801,6 +801,7 @@ class PlayerController {
         // 字幕の文字サイズ倍率の設定値を、プレイヤーコンテナの CSS カスタムプロパティに反映する
         // ARIB B24 字幕の Canvas に対するスタイルは App.vue 側のグローバル CSS (.dplayer-video-wrap-aspect > canvas)
         // で定義しており、ここでセットした CSS 変数を介して Canvas に transform が適用される
+        // (データ放送の表示中は、LiveDataBroadcastingManager が BML ブラウザの Shadow DOM に入れた同じ内容のスタイルが適用される)
         // CSS のみで完結させることで、Canvas が動的に追加されたタイミングでも自動的にスタイルが反映され、
         // 起動時に MutationObserver や同期 DOM 操作を走らせる必要がなく、再生開始の遅延要因にもならない
         const apply_caption_style = () => {

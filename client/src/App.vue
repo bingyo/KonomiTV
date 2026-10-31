@@ -292,6 +292,8 @@ body .route-container {
 // 字幕の実描画中心を字幕 Canvas の transform-origin に inline で動的上書きする (拡大時の位置ズレ補正のため)
 // また、新しい字幕のピボットが確定するまでの間は、補正前の位置で字幕が一瞬表示されるのを防ぐため、
 // PlayerController が inline の visibility で字幕 Canvas を一時的に不可視化することがある
+// データ放送の表示中は映像と字幕が BML ブラウザの Shadow DOM 内へ移動してこの CSS が適用されなくなるため、
+// LiveDataBroadcastingManager が同じ内容のスタイルを Shadow DOM にも入れている (変更する際は両方を揃える必要がある)
 .dplayer-video-wrap-aspect > canvas {
     transform: scale(var(--caption-text-scale, 1));
     transform-origin: bottom center;
