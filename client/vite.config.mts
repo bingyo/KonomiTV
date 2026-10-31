@@ -7,6 +7,8 @@ import { comlink } from 'vite-plugin-comlink';
 import { VitePWA } from 'vite-plugin-pwa';
 import vuetify, { transformAssetUrls } from 'vite-plugin-vuetify';
 
+import { dplayerCaptionDRCSPatch } from './vite-plugins/DPlayerCaptionDRCSPatch.mts';
+
 
 // Vite の設定
 // https://vitejs.dev/config/
@@ -61,6 +63,8 @@ export default defineConfig({
     },
     // プラグインの設定
     plugins: [
+        // DPlayer に内包された aribb24.js の DRCS 描画ループを高速版に差し替える
+        dplayerCaptionDRCSPatch(),
         comlink(),
         vue({
             template: {

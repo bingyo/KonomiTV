@@ -7,6 +7,7 @@ import mpegts from 'mpegts.js';
 import { watch } from 'vue';
 
 import APIClient from '@/services/APIClient';
+import { renderCaptionDRCSGlyph } from '@/services/player/CaptionDRCSRenderer';
 import { CAPTION_GAIJI_GLYPHS_PUA, CAPTION_GAIJI_GLYPHS_UNICODE } from '@/services/player/CaptionGaijiGlyphs';
 import CustomBufferController from '@/services/player/CustomBufferController';
 import CaptureManager from '@/services/player/managers/CaptureManager';
@@ -354,6 +355,11 @@ class PlayerController {
         // こうしないと DPlayer が mpegts.js / hls.js を認識できない
         (window as any).mpegts = mpegts;
         (window as any).Hls = Hls;
+
+        // 字幕の DRCS (ビットマップ外字) の高速レンダラーを window 直下に入れる
+        // DPlayer のバンドルに内包された aribb24.js からは、vite-plugins/DPlayerCaptionDRCSPatch.mts で書き換えた
+        // DRCS の描画処理を介してここを参照する
+        (window as any).KonomiTVCaptionDRCSRenderer = renderCaptionDRCSGlyph;
 
         // 字幕描画に用いるフォントスタックと、外字を Unicode 領域の代わりに私用面 (PUA) で描画するかを先に確定させる
         // 下の aribb24.js へのオプション指定と、プレイヤー初期化後の外字グリフウォームアップの両方から同じ値を参照する
@@ -1550,10 +1556,13 @@ class PlayerController {
         canvas.height = 100;
         const context = canvas.getContext('2d');
         if (context === null) return;
-        context.font = `48px ${normal_font}`;
+        // フォントのフォールバック解決結果やグリフのキャッシュはフォントサイズ・縁取りの太さごとに分かれるため、
+        // 実際の字幕描画 (標準サイズの字幕で 72px・lineWidth: 8・lineJoin: round) と同じ値を指定する
+        context.font = `72px ${normal_font}`;
         context.textBaseline = 'middle';
         context.textAlign = 'center';
-        context.lineWidth = 4;
+        context.lineJoin = 'round';
+        context.lineWidth = 8;
 
         // usePUA 設定に応じて、実際の字幕描画で使われる方のマッピングの文字一覧をウォームアップする
         const glyphs = use_pua ? CAPTION_GAIJI_GLYPHS_PUA : CAPTION_GAIJI_GLYPHS_UNICODE;

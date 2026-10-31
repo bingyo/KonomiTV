@@ -108,6 +108,8 @@ Windows では Windows サービス、Linux では pm2 サービスとして動�
   - `main.ts`: アプリケーションのエントリーポイント・初期化処理
 - `package.json`: Node.js プロジェクト設定と依存関係 (yarn)
 - `vite.config.mts`: Vite ビルド設定
+- `vite-plugins/`: 独自の Vite プラグイン
+  - `DPlayerCaptionDRCSPatch.mts`: DPlayer のバンドルに内包された aribb24.js の DRCS 描画ループを高速版に書き換えるパッチ (DPlayer の更新でコードが変わるとビルドを失敗させる)
 - `tsconfig.json`: TypeScript 設定
 - `.eslintrc.json`: ESLint コードスタイル設定
 
