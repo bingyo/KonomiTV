@@ -1,6 +1,7 @@
 
 import * as Comlink from 'comlink';
 import DPlayer from 'dplayer';
+import { Deinterlacer } from 'mpeg2toh264/yadif';
 import { isEqual } from 'ohash';
 import { AribKeyCode, BMLBrowser, BMLBrowserFontFace } from 'web-bml';
 
@@ -64,6 +65,10 @@ class LiveDataBroadcastingManager implements PlayerManager {
     // BML ブラウザの Shadow DOM に入れる、字幕 Canvas 用のスタイル要素
     // moveVideoElementToBMLBrowser() で映像の要素の移動先の Shadow DOM に追加する
     private readonly caption_canvas_style_element: HTMLStyleElement;
+
+    // BML ブラウザ内での表示用に変更する前の映像要素一式のインラインスタイル
+    // moveVideoElementToDPlayer() で DPlayer と Deinterlacer が設定した値を正確に復元するために参照する
+    private media_element_original_styles = new Map<HTMLElement, string | null>();
 
     // PSI/SI アーカイブデータデコーダーのインスタンス
     private live_psi_archived_data_decoder: Comlink.Remote<ILivePSIArchivedDataDecoder> | null = null;
@@ -625,16 +630,33 @@ class LiveDataBroadcastingManager implements PlayerManager {
         // appendChild() なので、同じ要素を再度追加しても増えない (BML ブラウザが再作成された場合は新しい Shadow DOM に移る)
         this.media_element.getRootNode().appendChild(this.caption_canvas_style_element);
 
-        // データ放送内での表示用にスタイルを調整
+        // web-bml の閉じた Shadow DOM 内では DPlayer 側の CSS が届かないため、映像要素一式をインラインで整形する
+        // YADIF Deinterlacer の動作中は Deinterlacer のラッパー内に video と Canvas が入るので、直下だけでなく子孫要素まで対象にする
+        const media_elements = [this.media_element, ...this.media_element.querySelectorAll<HTMLElement>('*')];
+        for (const element of media_elements) {
+            // web-bml は同じ表示中にも load と visible を複数回発火するため、最初に記録した DPlayer 側の値を維持する
+            // データ放送表示中に字幕 Canvas などが増えた場合だけ、その要素の初期値を追加で記録する
+            if (this.media_element_original_styles.has(element) === false) {
+                this.media_element_original_styles.set(element, element.getAttribute('style'));
+            }
+            element.style.display = 'block';
+            element.style.visibility = 'visible';
+        }
         this.media_element.style.width = '100%';
         this.media_element.style.height = '100%';
-        for (const child of this.media_element.children) {
-            (child as HTMLElement).style.display = 'block';
-            (child as HTMLElement).style.visibility = 'visible';
-            if (child instanceof HTMLVideoElement) {
-                (child as HTMLVideoElement).style.width = '100%';
-                (child as HTMLVideoElement).style.height = '100%';
-            }
+        for (const video of this.media_element.querySelectorAll('video')) {
+            video.style.width = '100%';
+            video.style.height = '100%';
+        }
+        const deinterlacer = this.player.plugins.mpeg2toh264?.deinterlacer;
+        if (deinterlacer instanceof Deinterlacer && this.media_element.contains(deinterlacer.container)) {
+            deinterlacer.container.style.width = '100%';
+            deinterlacer.container.style.height = '100%';
+            // 閉じた Shadow DOM への移動は Deinterlacer の ResizeObserver で検出できないため、映像枠へ直接合わせる
+            deinterlacer.canvas.style.left = '0';
+            deinterlacer.canvas.style.top = '0';
+            deinterlacer.canvas.style.width = '100%';
+            deinterlacer.canvas.style.height = '100%';
         }
         // BML ブラウザのアスペクト比が 16:9 以外のケース (運用上は 720×480 のみ該当) に限定して適用する
         if (this.bml_browser_width / this.bml_browser_height !== 16 / 9) {
@@ -645,21 +667,24 @@ class LiveDataBroadcastingManager implements PlayerManager {
             // scaleY() が設定されるため、Canvas 要素のみ親要素の scaleY() を打ち消すよう縦方向に縮小して中央に配置する
             // Canvas の transform は字幕の文字サイズ倍率、transform-origin は字幕の拡大ピボット追跡が使っているため、
             // transform ではなくレイアウトで打ち消す (拡大の中心が字幕の実描画位置からズレないようにする)
-            for (const child of this.media_element.children) {
-                if (child instanceof HTMLCanvasElement) {
-                    child.style.height = `${100 / magnification}%`;
-                    child.style.top = `${(100 - 100 / magnification) / 2}%`;
+            for (const canvas of this.media_element.querySelectorAll('canvas')) {
+                // YADIF Deinterlacer の Canvas は video と同じ変形を受けることで映像へ重なるため、字幕 Canvas だけを補正する
+                if (deinterlacer instanceof Deinterlacer && canvas === deinterlacer.canvas) {
+                    continue;
                 }
+                canvas.style.height = `${100 / magnification}%`;
+                canvas.style.top = `${(100 - 100 / magnification) / 2}%`;
             }
         } else {
             this.media_element.style.transform = '';
             this.media_element.style.transformOrigin = '';
-            for (const child of this.media_element.children) {
-                if (child instanceof HTMLCanvasElement) {
-                    // aribb24.js が Canvas の作成時に設定する値に戻す
-                    child.style.height = '100%';
-                    child.style.top = '0';
+            for (const canvas of this.media_element.querySelectorAll('canvas')) {
+                if (deinterlacer instanceof Deinterlacer && canvas === deinterlacer.canvas) {
+                    continue;
                 }
+                // aribb24.js が Canvas の作成時に設定する値に戻す
+                canvas.style.height = '100%';
+                canvas.style.top = '0';
             }
         }
 
@@ -689,24 +714,38 @@ class LiveDataBroadcastingManager implements PlayerManager {
             this.player.template.videoWrap.insertBefore(this.media_element, this.container_element.nextElementSibling);
         }
 
-        // データ放送内での表示用に調整していたスタイルを戻す
-        this.media_element.style.width = '';
-        this.media_element.style.height = '';
-        for (const child of this.media_element.children) {
-            (child as HTMLElement).style.display = '';
-            (child as HTMLElement).style.visibility = '';
-            if (child instanceof HTMLVideoElement) {
-                (child as HTMLVideoElement).style.width = '';
-                (child as HTMLVideoElement).style.height = '';
+        // DPlayer と Deinterlacer が設定していたインラインスタイルを要素ごとに完全復元する
+        const deinterlacer = this.player.plugins.mpeg2toh264?.deinterlacer;
+        for (const [element, original_style] of this.media_element_original_styles) {
+            // 字幕 Canvas の transform-origin と visibility は、PlayerController の字幕の拡大ピボット追跡がデータ放送の表示中も更新している
+            const is_caption_canvas = element instanceof HTMLCanvasElement &&
+                !(deinterlacer instanceof Deinterlacer && element === deinterlacer.canvas);
+            const current_transform_origin = element.style.transformOrigin;
+            if (original_style === null) {
+                element.removeAttribute('style');
+            } else {
+                element.setAttribute('style', original_style);
             }
-            if (child instanceof HTMLCanvasElement) {
-                // aribb24.js が Canvas の作成時に設定する値に戻す
-                child.style.height = '100%';
-                child.style.top = '0';
+            // 記録時点のピボットに戻すと表示中の字幕の拡大中心がズレるため、transform-origin は現在の値を引き継ぐ
+            // 記録時点がピボット確定待ちの不可視化中だった場合に、字幕が不可視のまま取り残されないよう hidden も解除する
+            if (is_caption_canvas === true) {
+                element.style.transformOrigin = current_transform_origin;
+                if (element.style.visibility === 'hidden') {
+                    element.style.visibility = '';
+                }
             }
         }
-        this.media_element.style.transform = '';
-        this.media_element.style.transformOrigin = '';
+        this.media_element_original_styles.clear();
+
+        // Deinterlacer のラッパーは Shadow DOM から戻した後に intrinsic size だけでは元の高さを復元できないため、DPlayer の映像枠へ合わせ直す
+        if (deinterlacer instanceof Deinterlacer && this.media_element.contains(deinterlacer.container)) {
+            deinterlacer.container.style.width = '100%';
+            deinterlacer.container.style.height = '100%';
+            for (const video of this.media_element.querySelectorAll('video')) {
+                video.style.width = '100%';
+                video.style.height = '100%';
+            }
+        }
 
         this.is_video_element_moved_to_bml_browser = false;
     }

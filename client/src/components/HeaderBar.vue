@@ -25,6 +25,8 @@ import { pwaInstallHandler } from 'pwa-install-handler';
 import { onMounted, ref, computed, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 
+import Utils from '@/utils';
+
 const props = defineProps<{
     searchQuery?: string;
 }>();
@@ -74,20 +76,34 @@ onMounted(() => {
 // ルートの変更を監視して検索クエリを更新
 watch(() => route.fullPath, initializeSearchQuery);
 
+// 録画番組関連ページ (マイリスト・視聴履歴・オフライン保存を含む) かどうか
+const isVideoSection = (path: string) => {
+    return path.startsWith('/videos') ||
+        path.startsWith('/mylist') ||
+        path.startsWith('/watched-history') ||
+        path.startsWith('/offline-videos');
+};
+
 const searchPlaceholder = computed(() => {
-    return route.path.startsWith('/videos') || route.path.startsWith('/mylist') || route.path.startsWith('/watched-history')
+    if (route.path.startsWith('/captures')) {
+        return 'キャプチャを検索...';
+    }
+    return isVideoSection(route.path)
         ? '録画番組を検索...'
         : '放送予定の番組を検索...';
 });
 
 const getSearchPath = () => {
-    return route.path.startsWith('/videos') || route.path.startsWith('/mylist') || route.path.startsWith('/watched-history')
+    if (route.path.startsWith('/captures')) {
+        return '/captures/search';
+    }
+    return isVideoSection(route.path)
         ? '/videos/search'
         : '/tv/search';
 };
 
 const handleKeyDown = (event: KeyboardEvent) => {
-    if (event.key === 'Enter' && !event.isComposing) {
+    if (event.key === 'Enter' && !Utils.isIMEComposing(event)) {
         doSearch();
     }
 };
@@ -109,7 +125,7 @@ const doSearch = () => {
 
 const showSearchInput = computed(() => {
     const path = route.path;
-    return !path.startsWith('/captures') && !path.startsWith('/settings') && !path.startsWith('/login') && !path.startsWith('/register');
+    return !path.startsWith('/settings') && !path.startsWith('/login') && !path.startsWith('/register');
 });
 
 // 番組表ページかどうか（ヘッダーにコントロールが多くスペースに余裕がないため、PWA インストールボタンを非表示にする）
