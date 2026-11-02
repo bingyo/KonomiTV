@@ -7,9 +7,11 @@ import type { Plugin } from 'vite';
 const DPLAYER_BUNDLE_PATH_PATTERN = /[\\/]dplayer[\\/]dist[\\/]DPlayer\.min\.js$/;
 
 // aribb24.js の CanvasProvider.renderCharacter() にある、DRCS の描画ループ前後の minify 済みコード
-// 変数の対応: r: 描画先の 2D コンテキスト / T: DRCS のビットマップ / E: 横ドット数 / B: 縦ドット数 /
+// 変数の対応: r: 描画先の 2D コンテキスト / S: DRCS のビットマップ / E: 横ドット数 / B: 縦ドット数 /
 //            I: 1 ドットあたりのビット数 / F: 縁取りのカラーコード / e: CanvasProvider クラス自身
-const DRCS_LOOP_PRECEDING_CODE = 'F=this.getOrnColorCode();';
+// minify 後の変数名は DPlayer のビルドごとに入れ替わることがある (1.33.3 ではビットマップとハッシュ文字列の S と T が入れ替わった)
+// 入れ替わりに気付かないと、別の変数をビットマップとして描画して外字が崩れるため、レンダラーに渡す変数の宣言も一致条件に含める
+const DRCS_LOOP_PRECEDING_CODE = 'var E=Math.floor(this.ssm_x*this.text_size_x/2),B=Math.floor(this.ssm_y*this.text_size_y/2),I=Math.floor(8*S.length/(E*B)),F=this.getOrnColorCode();';
 const DRCS_LOOP_START = 'if(F&&(!this.force_orn||!0===this.force_orn||this.force_orn!==this.fg_color)){r.fillStyle=e.getRGBAfromColorCode(F);for(var R=-2*this.height_magnification()';
 const DRCS_LOOP_END = '2*this.height_magnification())}}this.move_relative_pos(1,0)';
 
@@ -17,7 +19,7 @@ const DRCS_LOOP_END = '2*this.height_magnification())}}this.move_relative_pos(1,
 // PlayerController が window に登録した CaptionDRCSRenderer があればそれで描画し、なければ元の描画ループを実行する
 // 座標や色の計算式は、元の描画ループ内の式からループ変数の項を除いたもの
 const DRCS_RENDERER_CALL = [
-    'if(window.KonomiTVCaptionDRCSRenderer){window.KonomiTVCaptionDRCSRenderer(r,T,E,B,I,',
+    'if(window.KonomiTVCaptionDRCSRenderer){window.KonomiTVCaptionDRCSRenderer(r,S,E,B,I,',
     '(this.position_x+Math.floor(this.shs*this.text_size_x/2))*this.width_magnification(),',
     '(this.position_y-this.height()+Math.floor(this.svs*this.text_size_y/2))*this.height_magnification(),',
     '2*this.width_magnification(),2*this.height_magnification(),',
